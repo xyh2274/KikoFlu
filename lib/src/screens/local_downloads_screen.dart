@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'dart:async';
 import 'dart:io';
 
 import '../../l10n/app_localizations.dart';
@@ -85,8 +86,27 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       setState(() {
         _diskWorks = works;
       });
+      // 后台补全缺失/损坏的作品元数据（标题/封面/标签），
+      // 不阻塞首帧渲染；补全完成后自动刷新列表
+      unawaited(_upgradeMetadataInBackground());
     } catch (e) {
       _log.captureOutput('[LocalDownloads] 加载磁盘作品失败: $e');
+    }
+  }
+
+  // 后台补全作品元数据并刷新列表（首次进入/刷新时自动触发一次）
+  Future<void> _upgradeMetadataInBackground() async {
+    await DownloadService.instance.ensureLocalMetadataCompleteness();
+    if (!mounted) return;
+    // 补全可能改写了 work_metadata.json，重新加载磁盘作品
+    try {
+      final works = await DownloadService.instance.getDiskWorks();
+      if (!mounted) return;
+      setState(() {
+        _diskWorks = works;
+      });
+    } catch (e) {
+      _log.captureOutput('[LocalDownloads] 补全后刷新磁盘作品失败: $e');
     }
   }
 

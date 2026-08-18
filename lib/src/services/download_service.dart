@@ -81,10 +81,12 @@ class DownloadService {
     // 注意：启动时不执行 reloadMetadataFromDisk 全量磁盘扫描。
     // 该扫描需遍历整个下载目录（导入大量音声后目录可能极大），
     // 在主 isolate 执行会阻塞 UI 首帧渲染导致启动黑屏。
-    // 磁盘扫描改由"已下载"页进入/手动刷新时触发（页面有 loading 反馈）。
+    // 启动后异步补全缺失/不完整的作品元数据（标题/封面/标签），
+    // 不阻塞首帧；"已下载"页进入时也会再次触发（有防重入保护）。
 
     // O9: 启动时清理孤立的临时文件
     unawaited(_cleanupOrphanedTempFiles());
+    unawaited(ensureLocalMetadataCompleteness());
   }
 
   Future<Directory> _getDownloadDirectory() async {
@@ -1132,10 +1134,10 @@ class DownloadService {
       final workId = entry.key;
       final workDir = entry.value;
 
-      // 检查是否已有元数据文件
+      // 检查是否已有可用的元数据文件（损坏/无效的视为缺失，重新补全）
       final metadataFile = _workMetadataFile(workDir);
-      if (await metadataFile.exists()) {
-        continue; // 已有元数据，跳过
+      if (await _isUsableMetadataFile(metadataFile)) {
+        continue; // 已有有效元数据，跳过
       }
 
       _log.info('发现本地作品文件夹，尝试补全元数据: RJ$workId', tag: 'Download');
@@ -1744,6 +1746,165 @@ class DownloadService {
       _log.error('扫描本地作品目录失败: $e', tag: 'Download');
     }
     return result;
+  }
+
+  /// 检查元数据文件是否存在且内容有效（JSON 可解析）。
+  /// 导入异常时可能写入半截/损坏的 work_metadata.json，应视为缺失以便重新补全。
+  Future<bool> _isUsableMetadataFile(File metadataFile) async {
+    if (!await metadataFile.exists()) return false;
+    try {
+      final decoded = jsonDecode(await metadataFile.readAsString());
+      return decoded is Map;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _metadataUpgradeInProgress = false;
+
+  /// 后台补全缺失/损坏/不完整的作品元数据（标题/标签/声优/日期/封面），不阻塞调用方。
+  /// 对磁盘上无有效 work_metadata.json 的作品先生成本地基础元数据；
+  /// 对缺关键字段（标题为纯 RJ 号、无标签等）的作品从在线 API 合并补全；
+  /// 对无有效封面的作品下载 cover.jpg。
+  /// 供"已下载"页进入时触发：先展示回退元数据，补全完成后通知任务列表刷新。
+  Future<void> ensureLocalMetadataCompleteness() async {
+    if (_metadataUpgradeInProgress) return;
+    _metadataUpgradeInProgress = true;
+    try {
+      final downloadDir = await _getDownloadDirectory();
+      if (!await downloadDir.exists()) {
+        _log.warning('下载目录不存在，跳过元数据补全', tag: 'Download');
+        return;
+      }
+
+      // 收集作品目录（不递归，仅第一层）
+      final works = <int, Directory>{};
+      await for (final entity in downloadDir.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final folder = _localMetadataService.parseWorkFolder(entity);
+        if (folder != null) works[folder.id] = entity;
+      }
+      if (works.isEmpty) return;
+
+      _log.info(
+        '开始后台补全 ${works.length} 个作品元数据',
+        tag: 'Download',
+      );
+
+      var upgradedCount = 0;
+      for (final entry in works.entries) {
+        final workId = entry.key;
+        final workDir = entry.value;
+        try {
+          // 1) 无有效元数据文件时，先生成本地基础元数据并写盘
+          var metadata = await _loadWorkMetadata(workId);
+          if (metadata == null) {
+            final imported =
+                await _localMetadataService.loadImportedMetadata(
+              workDir: workDir,
+              workId: workId,
+            );
+            metadata = await _localMetadataService.buildFallbackMetadata(
+              workId: workId,
+              workDir: workDir,
+              directoryName: p.basename(workDir.path),
+              existingMetadata: imported,
+            );
+            await _workMetadataFile(workDir)
+                .writeAsString(jsonEncode(metadata), flush: true);
+            _log.info('已生成本地基础元数据: RJ$workId', tag: 'Download');
+          }
+
+          // 2) 缺关键字段（标题为 RJ 号/无标签/无声优/无日期）时在线合并补全
+          if (needsOnlineMetadataScrape(metadata)) {
+            await scrapeWorkMetadata(workId);
+            metadata = await _loadWorkMetadata(workId) ?? metadata;
+          }
+
+          // 3) 本地无有效封面时下载封面
+          await _ensureWorkCover(workId, workDir, metadata);
+          upgradedCount++;
+        } catch (e) {
+          _log.warning('补全作品元数据失败 RJ$workId: $e', tag: 'Download');
+        }
+      }
+
+      // 补全完成后，刷新已完成任务的元数据缓存（磁盘可能已更新标题/封面/标签），
+      // 否则 UI 仍显示旧的任务缓存（如纯 RJ 号标题）。
+      var refreshedCount = 0;
+      for (var i = 0; i < _tasks.length; i++) {
+        final task = _tasks[i];
+        if (task.status != DownloadStatus.completed) continue;
+        final metadata = await _loadWorkMetadata(task.workId);
+        if (metadata != null) {
+          _tasks[i] = task.copyWith(workMetadata: metadata);
+          refreshedCount++;
+        }
+      }
+
+      // 通知任务列表（触发"已下载"页刷新）并保存到本地
+      _tasksController.add(List.from(_tasks));
+      await _saveTasks();
+      _log.info(
+        '作品元数据后台补全完成，处理 $upgradedCount 个作品，刷新任务缓存 $refreshedCount 条',
+        tag: 'Download',
+      );
+    } catch (e) {
+      _log.error('作品元数据后台补全失败: $e', tag: 'Download');
+    } finally {
+      _metadataUpgradeInProgress = false;
+    }
+  }
+
+  /// 下载缺失的作品封面（cover.jpg）。已有有效封面文件时跳过。
+  Future<void> _ensureWorkCover(
+    int workId,
+    Directory workDir,
+    Map<String, dynamic> metadata,
+  ) async {
+    // 已有有效封面路径且文件存在 → 跳过
+    final coverPath = metadata['localCoverPath'] as String?;
+    if (coverPath != null && coverPath.trim().isNotEmpty) {
+      final existing = File(
+        DownloadFilePathService.localPathForRelativePath(
+          rootPath: workDir.path,
+          relativePath: coverPath,
+        ),
+      );
+      if (await existing.exists()) return;
+    }
+
+    final host = StorageService.getString('server_host') ?? '';
+    if (host.isEmpty) return;
+    String normalizedHost = host;
+    if (!host.startsWith('http://') && !host.startsWith('https://')) {
+      normalizedHost = 'https://$host';
+    }
+    final token = StorageService.getString('auth_token') ?? '';
+
+    // 优先使用在线元数据中的封面 URL，否则回退到 API 封面接口
+    String? coverUrl;
+    final onlineCover = metadata['coverUrl'] as String?;
+    if (onlineCover != null && onlineCover.trim().isNotEmpty) {
+      coverUrl = onlineCover.startsWith('http')
+          ? onlineCover
+          : '$normalizedHost$onlineCover';
+    } else {
+      coverUrl = token.isNotEmpty
+          ? '$normalizedHost/api/cover/$workId?token=$token'
+          : '$normalizedHost/api/cover/$workId';
+    }
+
+    final localCover =
+        await _downloadCoverImage(workId, coverUrl, workDirPath: workDir.path);
+    if (localCover != null) {
+      await _saveWorkMetadata(
+        workId,
+        {...metadata, 'localCoverPath': 'cover.jpg'},
+        null,
+      );
+      _log.info('已下载作品封面: RJ$workId', tag: 'Download');
+    }
   }
 
   // 判断本地元数据是否缺少可在线补全的关键字段（标签/声优/发布日期/真实标题）
