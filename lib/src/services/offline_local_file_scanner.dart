@@ -60,8 +60,12 @@ class OfflineLocalFileScanner {
     String workDirPath,
     String parentPath,
     Map<String, bool> existingFiles,
-    Set<String> knownRelativePaths,
-  ) async {
+    Set<String> knownRelativePaths, {
+    int depth = 0,
+  }) async {
+    // 防御：文件树异常过深时停止展开，避免无限递归
+    if (depth > 64) return const [];
+
     final filteredItems = <dynamic>[];
 
     for (final item in items) {
@@ -72,6 +76,7 @@ class OfflineLocalFileScanner {
           parentPath,
           existingFiles,
           knownRelativePaths,
+          depth: depth,
         );
         if (folder != null) filteredItems.add(folder);
         continue;
@@ -95,8 +100,11 @@ class OfflineLocalFileScanner {
     String workDirPath,
     String parentPath,
     Map<String, bool> existingFiles,
-    Set<String> knownRelativePaths,
-  ) async {
+    Set<String> knownRelativePaths, {
+    int depth = 0,
+  }) async {
+    if (depth > 64) return null;
+
     final children = FileTreeUtils.childrenOf(item);
     if (children == null || children.isEmpty) return null;
 
@@ -109,6 +117,7 @@ class OfflineLocalFileScanner {
       folderPath,
       existingFiles,
       knownRelativePaths,
+      depth: depth + 1,
     );
 
     if (filteredChildren.isEmpty) return null;
@@ -182,13 +191,19 @@ class OfflineLocalFileScanner {
     required String directoryPath,
     required String parentPath,
     required Set<String> knownRelativePaths,
+    int depth = 0,
   }) async {
+    // 防御：目录嵌套过深（异常/递归目录）时停止展开，避免无限递归
+    if (depth > 64) return;
+
     final directory = Directory(directoryPath);
     if (!await directory.exists()) return;
 
     final entities = <FileSystemEntity>[];
     await for (final entity in directory.list(followLinks: false)) {
       entities.add(entity);
+      // 防御：单目录条目过多（超大/异常目录）时截断，避免扫描阻塞 UI
+      if (entities.length >= 2000) break;
     }
     entities.sort(
       (a, b) => FileTreeUtils.naturalCompare(
@@ -223,6 +238,7 @@ class OfflineLocalFileScanner {
           directoryPath: entity.path,
           parentPath: normalizedRelativePath,
           knownRelativePaths: knownRelativePaths,
+          depth: depth + 1,
         );
 
         if (children.isEmpty) continue;

@@ -78,15 +78,11 @@ class DownloadService {
         _updateTask(task.copyWith(status: DownloadStatus.paused));
       }
     }
-    // 启动时从硬盘完全同步任务（静默执行）
-    try {
-      await reloadMetadataFromDisk();
-      _log.info('启动时同步完成', tag: 'Download');
-    } catch (e) {
-      _log.error('启动时同步失败: $e', tag: 'Download');
-      // 同步失败则保持当前状态，等待用户手动刷新
-    }
-    
+    // 注意：启动时不执行 reloadMetadataFromDisk 全量磁盘扫描。
+    // 该扫描需遍历整个下载目录（导入大量音声后目录可能极大），
+    // 在主 isolate 执行会阻塞 UI 首帧渲染导致启动黑屏。
+    // 磁盘扫描改由"已下载"页进入/手动刷新时触发（页面有 loading 反馈）。
+
     // O9: 启动时清理孤立的临时文件
     unawaited(_cleanupOrphanedTempFiles());
   }
@@ -1310,8 +1306,11 @@ class DownloadService {
   Future<void> _syncFileTreeWithDisk(int workId, Directory workDir) async {
     // 1. 收集磁盘上所有实际文件的相对路径
     final diskFiles = <String, File>{};
+    // 防御：单作品文件数过多（超大/异常目录）时截断，避免扫描阻塞主 isolate
+    const maxFilesPerWork = 10000;
 
     Future<void> collectFiles(Directory dir, String relativePath) async {
+      if (diskFiles.length >= maxFilesPerWork) return;
       await for (final entity in dir.list()) {
         if (entity is File) {
           final fileName = entity.path.split(Platform.pathSeparator).last;
@@ -1322,6 +1321,7 @@ class DownloadService {
           )) {
             continue;
           }
+          if (diskFiles.length >= maxFilesPerWork) return;
           final fullName =
               relativePath.isEmpty ? fileName : '$relativePath/$fileName';
           diskFiles[fullName] = entity;
@@ -1590,6 +1590,10 @@ class DownloadService {
 
       // 第四步：扫描硬盘上的所有文件，添加新发现的任务
       final newTasks = <DownloadTask>[];
+      // 任务索引（workId:fileName -> task），避免对每个文件线性扫描 _tasks 造成 O(n²)
+      final taskIndex = <String, DownloadTask>{
+        for (final t in _tasks) '${t.workId}:${t.fileName}': t,
+      };
       for (final entry in workFolders.entries) {
         final workId = entry.key;
         final workDir = entry.value;
@@ -1605,7 +1609,12 @@ class DownloadService {
         }
 
         // 递归扫描文件夹中的所有文件
+        // 防御：单个作品文件数超过阈值时停止扫描该作品，
+        // 避免超大目录（导入异常/海量文件）阻塞主 isolate
+        const maxFilesPerWork = 10000;
+        var scannedFileCount = 0;
         Future<void> scanDirectory(Directory dir, String relativePath) async {
+          if (scannedFileCount > maxFilesPerWork) return;
           await for (final entity in dir.list()) {
             if (entity is File) {
               final fileName = entity.path.split(Platform.pathSeparator).last;
@@ -1618,24 +1627,22 @@ class DownloadService {
                 continue;
               }
 
+              if (++scannedFileCount > maxFilesPerWork) {
+                _log.warning(
+                  '作品 RJ$workId 文件数超过 $maxFilesPerWork，停止扫描剩余文件',
+                  tag: 'Download',
+                );
+                return;
+              }
+
               // 构建相对路径下的文件名
               final fullFileName =
                   relativePath.isEmpty ? fileName : '$relativePath/$fileName';
 
-              // 检查该文件是否已有对应的任务
-              final existingTask = _tasks.firstWhere(
-                (t) => t.workId == workId && t.fileName == fullFileName,
-                orElse: () => DownloadTask(
-                  id: '',
-                  workId: 0,
-                  workTitle: '',
-                  fileName: '',
-                  downloadUrl: '',
-                  createdAt: DateTime.now(),
-                ),
-              );
+              // 检查该文件是否已有对应的任务（使用索引 O(1) 查询）
+              final existingTask = taskIndex['$workId:$fullFileName'];
 
-              if (existingTask.id.isEmpty) {
+              if (existingTask == null) {
                 // 发现新文件，创建任务
                 final newTask = DownloadTask(
                   id: '${workId}_${fullFileName}_${DateTime.now().millisecondsSinceEpoch}',
@@ -1711,8 +1718,12 @@ class DownloadService {
       final downloadDir = await _getDownloadDirectory();
       if (!await downloadDir.exists()) return result;
 
+      var scannedCount = 0;
       await for (final entity in downloadDir.list(followLinks: false)) {
         if (entity is! Directory) continue;
+        // 防御：下载目录第一层作品过多（导入异常/海量目录）时截断，
+        // 避免扫描耗时过长阻塞主 isolate 导致页面卡死
+        if (++scannedCount > 500) break;
         final parsed = _localMetadataService.parseWorkFolder(entity);
         if (parsed == null) continue;
 
@@ -2099,6 +2110,10 @@ class DownloadService {
       if (srcReal.startsWith('$dstReal${Platform.pathSeparator}')) {
         return _DirValidation.fail('源目录不能位于 KikoFlu 下载目录之内');
       }
+      // 源目录是下载目录的祖先（包含下载目录本身）时，复制会递归复制自身导致爆炸
+      if (dstReal.startsWith('$srcReal${Platform.pathSeparator}')) {
+        return _DirValidation.fail('源目录不能包含 KikoFlu 当前的下载目录');
+      }
     } catch (_) {
       // resolveSymbolicLinksSync 可能失败，忽略
     }
@@ -2158,9 +2173,31 @@ class DownloadService {
   }) async {
     int totalBytes = 0;
     try {
+      // 第二道防线：目标目录位于源目录之内时中止（防止递归复制自身）
+      try {
+        final srcReal = source.resolveSymbolicLinksSync();
+        final tgtReal = target.resolveSymbolicLinksSync();
+        if (srcReal == tgtReal ||
+            tgtReal.startsWith('$srcReal${Platform.pathSeparator}')) {
+          _log.error(
+            '复制目标位于源目录之内，已中止复制: source=$srcReal, target=$tgtReal',
+            tag: 'Download',
+          );
+          return 0;
+        }
+      } catch (_) {
+        // resolveSymbolicLinksSync 失败时忽略，继续尝试
+      }
+
       await for (final entity
           in source.list(recursive: true, followLinks: false)) {
         if (entity is! File) continue;
+        // 防御：跳过目标目录内的文件（防止源包含目标时的递归复制）
+        if (entity.path.startsWith(
+          '${target.path}${Platform.pathSeparator}',
+        )) {
+          continue;
+        }
         final rel = p.relative(entity.path, from: source.path);
         final destPath = p.join(target.path, rel);
         await Directory(p.dirname(destPath)).create(recursive: true);

@@ -148,10 +148,14 @@ class LocalWorkMetadataService {
     return null;
   }
 
-  Future<List<dynamic>> buildFileTree(Directory workDir) async {
+  Future<List<dynamic>> buildFileTree(Directory workDir) {
+    // 预算：限制单次文件树构建的累计节点数，
+    // 防止异常嵌套目录（导入递归复制等）组合爆炸拖垮主 isolate
+    final budget = _TreeBuildBudget(20000);
     return _buildDirectoryChildren(
       directory: workDir,
       parentRelativePath: '',
+      budget: budget,
     );
   }
 
@@ -195,7 +199,11 @@ class LocalWorkMetadataService {
     required Directory directory,
     required String parentRelativePath,
     required List<_CoverCandidate> candidates,
+    int depth = 0,
   }) async {
+    // 防御：目录嵌套过深（异常/递归目录）时停止展开
+    if (depth > 64) return;
+
     await for (final entity in directory.list(followLinks: false)) {
       final title = p.basename(entity.path);
       if (title.startsWith('.') || title.endsWith('.downloading')) continue;
@@ -208,7 +216,10 @@ class LocalWorkMetadataService {
           directory: entity,
           parentRelativePath: relativePath,
           candidates: candidates,
+          depth: depth + 1,
         );
+        // 防御：封面候选过多时停止继续搜索
+        if (candidates.length >= 50) break;
         continue;
       }
 
@@ -234,10 +245,17 @@ class LocalWorkMetadataService {
   Future<List<dynamic>> _buildDirectoryChildren({
     required Directory directory,
     required String parentRelativePath,
+    int depth = 0,
+    required _TreeBuildBudget budget,
   }) async {
+    // 防御：目录嵌套过深（异常/递归目录）或累计节点数超预算时停止展开
+    if (depth > 64 || budget.exhausted) return const [];
+
     final entities = <FileSystemEntity>[];
     await for (final entity in directory.list(followLinks: false)) {
       entities.add(entity);
+      // 防御：单目录条目过多（超大/异常目录）时截断，避免扫描耗时过长阻塞 UI
+      if (entities.length >= 2000 || budget.exhausted) break;
     }
     entities.sort(
       (a, b) => FileTreeUtils.naturalCompare(
@@ -248,6 +266,7 @@ class LocalWorkMetadataService {
 
     final children = <dynamic>[];
     for (final entity in entities) {
+      if (budget.exhausted) break;
       final title = p.basename(entity.path);
       final relativePath =
           parentRelativePath.isEmpty ? title : '$parentRelativePath/$title';
@@ -260,8 +279,12 @@ class LocalWorkMetadataService {
         final nested = await _buildDirectoryChildren(
           directory: entity,
           parentRelativePath: normalizedRelativePath,
+          depth: depth + 1,
+          budget: budget,
         );
         if (nested.isEmpty) continue;
+        budget.consume();
+        if (budget.exhausted) break;
         children.add({
           'type': 'folder',
           'title': title,
@@ -274,6 +297,8 @@ class LocalWorkMetadataService {
       if (entity is! File) continue;
       if (await File('${entity.path}.downloading').exists()) continue;
 
+      budget.consume();
+      if (budget.exhausted) break;
       final size = await fileLength(entity);
       children.add({
         'type': FileIconUtils.inferFileType(title),
@@ -512,4 +537,17 @@ class _CoverCandidate {
   final String relativePath;
   final int priority;
   final int depth;
+}
+
+/// 文件树构建预算：限制单次构建的累计节点数，
+/// 防止异常嵌套目录（导入递归复制等）组合爆炸拖垮主 isolate。
+class _TreeBuildBudget {
+  _TreeBuildBudget(this.limit);
+
+  final int limit;
+  int _used = 0;
+
+  bool get exhausted => _used >= limit;
+
+  void consume() => _used++;
 }

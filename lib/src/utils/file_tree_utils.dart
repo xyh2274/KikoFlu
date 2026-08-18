@@ -394,12 +394,15 @@ class FileTreeUtils {
 
   /// 对文件树每层按标题做自然排序（01, 02, ... 010, 011），
   /// 使本地文件列表与在线服务端的文件顺序保持一致。
-  static void sortNatural(List<dynamic> items) {
+  static void sortNatural(List<dynamic> items, [int depth = 0]) {
+    // 防御：文件树异常过深（如循环引用/递归目录）时停止，避免无限递归
+    if (depth > 64) return;
+
     items.sort((a, b) => naturalCompare(titleOf(a), titleOf(b)));
     for (final item in items) {
       if (isFolder(item)) {
         final children = childrenOf(item);
-        if (children != null) sortNatural(children);
+        if (children != null) sortNatural(children, depth + 1);
       }
     }
   }
