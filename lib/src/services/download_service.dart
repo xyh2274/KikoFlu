@@ -1735,7 +1735,7 @@ class DownloadService {
     return result;
   }
 
-  // 判断本地元数据是否缺少可在线补全的关键字段（标签/声优/发布日期）
+  // 判断本地元数据是否缺少可在线补全的关键字段（标签/声优/发布日期/真实标题）
   static bool needsOnlineMetadataScrape(Map<String, dynamic> metadata) {
     if (metadata['tags'] is! List || (metadata['tags'] as List).isEmpty) {
       return true;
@@ -1747,7 +1747,43 @@ class DownloadService {
         (metadata['release'] as String? ?? '').trim().isEmpty) {
       return true;
     }
+    // 标题为空或仅为纯 RJ 编号（如导入文件夹名就是 RJ 号）时也补全真实标题
+    final title = (metadata['title'] as String? ?? '').trim();
+    if (title.isEmpty || isPureRjCode(title)) {
+      return true;
+    }
     return false;
+  }
+
+  // 判断标题是否为纯 RJ 编号（如 "RJ01581782"）
+  static bool isPureRjCode(String title) {
+    return RegExp(r'^RJ\d+$', caseSensitive: false).hasMatch(title.trim());
+  }
+
+  /// 保存翻译后的标题：`title` 写翻译结果，原文保存到 `originalTitle`（仅首次），
+  /// 返回是否写入成功。不影响下载（下载基于 hash/相对路径/URL）。
+  Future<bool> saveTranslatedTitle(int workId, String translatedTitle) async {
+    try {
+      final translated = translatedTitle.trim();
+      if (translated.isEmpty) return false;
+
+      final metadata = await _loadWorkMetadata(workId);
+      if (metadata == null) return false;
+
+      final currentTitle = (metadata['title'] as String? ?? '').trim();
+      if (currentTitle == translated) return false; // 无变化
+
+      if (metadata['originalTitle'] == null) {
+        metadata['originalTitle'] = currentTitle;
+      }
+      metadata['title'] = translated;
+      await _saveWorkMetadata(workId, metadata, null);
+      _log.info('已保存翻译标题: workId=$workId', tag: 'Download');
+      return true;
+    } catch (e) {
+      _log.error('保存翻译标题失败: workId=$workId, 错误: $e', tag: 'Download');
+      return false;
+    }
   }
 
   // 刮削在线元数据：拉取在线作品详情，合并补全本地缺失字段并写回 work_metadata.json。
@@ -1767,13 +1803,19 @@ class DownloadService {
       final online = await apiService.getWork(workId);
       if (online.isEmpty) return false;
 
-      // 合并：以在线详情为基底，保留本地非空字段（本地文件树/封面等不丢失）
+      // 合并：以在线详情为基底，保留本地非空字段（本地文件树/封面等不丢失）。
+      // 特例：本地标题为纯 RJ 编号（导入时无法推断真实标题）时，使用在线真实标题。
       final merged = Map<String, dynamic>.from(online);
       localMetadata.forEach((key, value) {
         if (value == null) return;
         if (value is String && value.trim().isEmpty) return;
         if (value is List && value.isEmpty) return;
         if (value is Map && value.isEmpty) return;
+        if (key == 'title' &&
+            value is String &&
+            isPureRjCode(value)) {
+          return; // 让位给在线真实标题
+        }
         merged[key] = value;
       });
       await _saveWorkMetadata(workId, merged, null);

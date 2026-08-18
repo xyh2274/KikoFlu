@@ -12,6 +12,7 @@ class WorkTitleHeader extends StatelessWidget {
     this.isTranslating = false,
     this.showExternalLink = false,
     this.onTranslate,
+    this.onSaveTranslation,
     this.onOpenExternalLink,
     this.onCopy,
     this.style,
@@ -24,6 +25,7 @@ class WorkTitleHeader extends StatelessWidget {
   final bool isTranslating;
   final bool showExternalLink;
   final VoidCallback? onTranslate;
+  final VoidCallback? onSaveTranslation; // 非空且已有翻译时显示"保存翻译"按钮
   final VoidCallback? onOpenExternalLink;
   final ValueChanged<String>? onCopy;
   final TextStyle? style;
@@ -71,6 +73,25 @@ class WorkTitleHeader extends StatelessWidget {
                   isTranslated: showTranslation,
                   isLoading: isTranslating,
                   onPressed: onTranslate,
+                ),
+              ),
+            if (translatedTitle != null && onSaveTranslation != null)
+              WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: onSaveTranslation,
+                      child: Icon(
+                        Icons.save_outlined,
+                        size: 16,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                  ),
                 ),
               ),
           ],

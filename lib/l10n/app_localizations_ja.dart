@@ -2357,6 +2357,17 @@ class SJa extends S {
   }
 
   @override
+  String get saveTranslatedTitleTitle => '翻訳タイトルを保存';
+
+  @override
+  String saveTranslatedTitleMessage(String original, String translated) {
+    return '翻訳後のタイトルを作品タイトルとして保存しますか？\n原文：$original\n翻訳：$translated';
+  }
+
+  @override
+  String get translationTitleSaved => '翻訳タイトルを保存しました';
+
+  @override
   String get noContentToTranslate => '翻訳するコンテンツがありません';
 
   @override

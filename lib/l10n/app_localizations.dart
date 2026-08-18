@@ -4392,6 +4392,24 @@ abstract class S {
   /// **'Translation complete: {count} items'**
   String translationComplete(int count);
 
+  /// No description provided for @saveTranslatedTitleTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Save translated title'**
+  String get saveTranslatedTitleTitle;
+
+  /// No description provided for @saveTranslatedTitleMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Save the translated title as the work title?\nOriginal: {original}\nTranslated: {translated}'**
+  String saveTranslatedTitleMessage(String original, String translated);
+
+  /// No description provided for @translationTitleSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Translated title saved'**
+  String get translationTitleSaved;
+
   /// No description provided for @noContentToTranslate.
   ///
   /// In en, this message translates to:

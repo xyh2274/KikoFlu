@@ -2420,6 +2420,17 @@ class SEn extends S {
   }
 
   @override
+  String get saveTranslatedTitleTitle => 'Save translated title';
+
+  @override
+  String saveTranslatedTitleMessage(String original, String translated) {
+    return 'Save the translated title as the work title?\nOriginal: $original\nTranslated: $translated';
+  }
+
+  @override
+  String get translationTitleSaved => 'Translated title saved';
+
+  @override
   String get noContentToTranslate => 'No content to translate';
 
   @override

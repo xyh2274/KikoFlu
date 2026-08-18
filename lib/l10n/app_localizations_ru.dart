@@ -2426,6 +2426,17 @@ class SRu extends S {
   }
 
   @override
+  String get saveTranslatedTitleTitle => 'Сохранить переведённый заголовок';
+
+  @override
+  String saveTranslatedTitleMessage(String original, String translated) {
+    return 'Сохранить переведённый заголовок как заголовок работы?\nОригинал: $original\nПеревод: $translated';
+  }
+
+  @override
+  String get translationTitleSaved => 'Переведённый заголовок сохранён';
+
+  @override
   String get noContentToTranslate => 'Нет содержимого для перевода';
 
   @override

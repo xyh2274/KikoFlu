@@ -2347,6 +2347,17 @@ class SZh extends S {
   }
 
   @override
+  String get saveTranslatedTitleTitle => '保存翻译标题';
+
+  @override
+  String saveTranslatedTitleMessage(String original, String translated) {
+    return '将翻译后的标题保存为作品标题？\n原文：$original\n翻译：$translated';
+  }
+
+  @override
+  String get translationTitleSaved => '标题翻译已保存';
+
+  @override
   String get noContentToTranslate => '没有需要翻译的内容';
 
   @override
@@ -5889,6 +5900,17 @@ class SZhHant extends SZh {
   String translationComplete(int count) {
     return '翻譯完成：$count 個項目';
   }
+
+  @override
+  String get saveTranslatedTitleTitle => '儲存翻譯標題';
+
+  @override
+  String saveTranslatedTitleMessage(String original, String translated) {
+    return '將翻譯後的標題儲存為作品標題？\n原文：$original\n翻譯：$translated';
+  }
+
+  @override
+  String get translationTitleSaved => '標題翻譯已儲存';
 
   @override
   String get noContentToTranslate => '沒有需要翻譯的內容';

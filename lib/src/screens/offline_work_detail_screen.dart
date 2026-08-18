@@ -59,6 +59,7 @@ class _OfflineWorkDetailScreenState
   String? _translatedTitle; // 翻译后的标题
   bool _showTranslation = false; // 是否显示翻译
   bool _isTranslating = false; // 是否正在翻译
+  bool _titleSaved = false; // 翻译标题是否已保存
 
   // 翻译标题
   Future<void> _translateTitle() async {
@@ -99,6 +100,47 @@ class _OfflineWorkDetailScreenState
         SnackBarUtil.showError(
             context, S.of(context).translationFailed(e.toString()));
       }
+    }
+  }
+
+  // 保存翻译标题到本地元数据（由用户确认后才写盘）
+  Future<void> _saveTranslatedTitle() async {
+    final translated = _translatedTitle;
+    if (translated == null || translated.trim().isEmpty) return;
+
+    final l10n = S.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.saveTranslatedTitleTitle),
+        content: Text(l10n.saveTranslatedTitleMessage(
+          widget.work.title,
+          translated,
+        )),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(l10n.confirm),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final ok = await DownloadService.instance
+        .saveTranslatedTitle(widget.work.id, translated);
+    if (!mounted) return;
+    if (ok) {
+      setState(() {
+        _titleSaved = true;
+      });
+      SnackBarUtil.showSuccess(context, l10n.translationTitleSaved);
+    } else {
+      SnackBarUtil.showError(context, l10n.saveFailedWithError(''));
     }
   }
 
@@ -384,6 +426,9 @@ class _OfflineWorkDetailScreenState
             showTranslation: _showTranslation,
             isTranslating: _isTranslating,
             onTranslate: _translateTitle,
+            onSaveTranslation: _translatedTitle != null && !_titleSaved
+                ? _saveTranslatedTitle
+                : null,
             onCopy: (title) => _copyToClipboard(
               title,
               S.of(context).titleLabel,
