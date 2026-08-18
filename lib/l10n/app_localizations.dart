@@ -3462,6 +3462,12 @@ abstract class S {
   /// **'Refresh complete'**
   String get refreshComplete;
 
+  /// No description provided for @scrapeComplete.
+  ///
+  /// In en, this message translates to:
+  /// **'Scraped online metadata for {count} works'**
+  String scrapeComplete(int count);
+
   /// No description provided for @refreshFailed.
   ///
   /// In en, this message translates to:
@@ -3527,6 +3533,84 @@ abstract class S {
   /// In en, this message translates to:
   /// **'Open Folder'**
   String get openFolder;
+
+  /// No description provided for @supplementDownload.
+  ///
+  /// In en, this message translates to:
+  /// **'Supplement Download'**
+  String get supplementDownload;
+
+  /// No description provided for @supplementPickTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Diff & Supplement Download'**
+  String get supplementPickTitle;
+
+  /// No description provided for @supplementPickWorksTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Select works to compare'**
+  String get supplementPickWorksTitle;
+
+  /// No description provided for @supplementSelectWorkFirst.
+  ///
+  /// In en, this message translates to:
+  /// **'Please select at least one work'**
+  String get supplementSelectWorkFirst;
+
+  /// No description provided for @supplementCompareSelected.
+  ///
+  /// In en, this message translates to:
+  /// **'Compare Selected'**
+  String get supplementCompareSelected;
+
+  /// No description provided for @supplementAlreadyExists.
+  ///
+  /// In en, this message translates to:
+  /// **'Exists'**
+  String get supplementAlreadyExists;
+
+  /// No description provided for @supplementMissingCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} missing'**
+  String supplementMissingCount(Object count);
+
+  /// No description provided for @supplementDownloadNeedServer.
+  ///
+  /// In en, this message translates to:
+  /// **'Configure a server address first to use supplement download'**
+  String get supplementDownloadNeedServer;
+
+  /// No description provided for @supplementComparing.
+  ///
+  /// In en, this message translates to:
+  /// **'Comparing online and local files...'**
+  String get supplementComparing;
+
+  /// No description provided for @supplementCheckFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to compare online files: {error}'**
+  String supplementCheckFailed(Object error);
+
+  /// No description provided for @noFilesNeedSupplement.
+  ///
+  /// In en, this message translates to:
+  /// **'Local files are complete, no supplement needed'**
+  String get noFilesNeedSupplement;
+
+  /// No description provided for @supplementConfirmContent.
+  ///
+  /// In en, this message translates to:
+  /// **'Found {count} missing files ({size} total). Add them to the download queue?'**
+  String supplementConfirmContent(Object count, Object size);
+
+  /// No description provided for @supplementDownloadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Supplement download failed: {error}'**
+  String supplementDownloadFailed(Object error);
 
   /// No description provided for @playlistLink.
   ///

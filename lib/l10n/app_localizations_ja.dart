@@ -1801,6 +1801,11 @@ class SJa extends S {
   String get refreshComplete => '更新完了';
 
   @override
+  String scrapeComplete(int count) {
+    return 'オンラインメタデータを $count 件の作品分取得しました';
+  }
+
+  @override
   String refreshFailed(String error) {
     return '更新失敗: $error';
   }
@@ -1845,6 +1850,53 @@ class SJa extends S {
 
   @override
   String get openFolder => 'フォルダを開く';
+
+  @override
+  String get supplementDownload => '補充ダウンロード';
+
+  @override
+  String get supplementPickTitle => '差分比較と補充ダウンロード';
+
+  @override
+  String get supplementPickWorksTitle => '比較する音声を選択';
+
+  @override
+  String get supplementSelectWorkFirst => '音声を1つ以上選択してください';
+
+  @override
+  String get supplementCompareSelected => '選択を比較';
+
+  @override
+  String get supplementAlreadyExists => '既に存在';
+
+  @override
+  String supplementMissingCount(Object count) {
+    return '欠落 $count 件';
+  }
+
+  @override
+  String get supplementDownloadNeedServer => '補充ダウンロードにはサーバーアドレスの設定が必要です';
+
+  @override
+  String get supplementComparing => 'オンラインとローカルのファイルを比較中...';
+
+  @override
+  String supplementCheckFailed(Object error) {
+    return 'オンラインファイルの比較に失敗: $error';
+  }
+
+  @override
+  String get noFilesNeedSupplement => 'ローカルファイルは完全で、補充は不要です';
+
+  @override
+  String supplementConfirmContent(Object count, Object size) {
+    return '$count 個の欠落ファイル（合計 $size）を検出しました。ダウンロードキューに追加しますか？';
+  }
+
+  @override
+  String supplementDownloadFailed(Object error) {
+    return '補充ダウンロードに失敗: $error';
+  }
 
   @override
   String get playlistLink => 'プレイリストリンク';

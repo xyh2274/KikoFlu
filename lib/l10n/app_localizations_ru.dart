@@ -1848,6 +1848,11 @@ class SRu extends S {
   String get refreshComplete => 'Обновление завершено';
 
   @override
+  String scrapeComplete(int count) {
+    return 'Загружены онлайн-метаданные для $count работ';
+  }
+
+  @override
   String refreshFailed(String error) {
     return 'Ошибка обновления: $error';
   }
@@ -1892,6 +1897,56 @@ class SRu extends S {
 
   @override
   String get openFolder => 'Открыть папку';
+
+  @override
+  String get supplementDownload => 'Дополнительная загрузка';
+
+  @override
+  String get supplementPickTitle =>
+      'Сравнение файлов и дополнительная загрузка';
+
+  @override
+  String get supplementPickWorksTitle => 'Выберите работы для сравнения';
+
+  @override
+  String get supplementSelectWorkFirst => 'Выберите хотя бы одну работу';
+
+  @override
+  String get supplementCompareSelected => 'Сравнить выбранное';
+
+  @override
+  String get supplementAlreadyExists => 'Уже есть';
+
+  @override
+  String supplementMissingCount(Object count) {
+    return 'Отсутствует: $count';
+  }
+
+  @override
+  String get supplementDownloadNeedServer =>
+      'Сначала настройте адрес сервера для дополнительной загрузки';
+
+  @override
+  String get supplementComparing => 'Сравнение онлайн и локальных файлов...';
+
+  @override
+  String supplementCheckFailed(Object error) {
+    return 'Не удалось сравнить онлайн-файлы: $error';
+  }
+
+  @override
+  String get noFilesNeedSupplement =>
+      'Локальные файлы в порядке, дополнительная загрузка не требуется';
+
+  @override
+  String supplementConfirmContent(Object count, Object size) {
+    return 'Обнаружено $count отсутствующих файлов (всего $size). Добавить в очередь загрузки?';
+  }
+
+  @override
+  String supplementDownloadFailed(Object error) {
+    return 'Ошибка дополнительной загрузки: $error';
+  }
 
   @override
   String get playlistLink => 'Ссылка на плейлист';

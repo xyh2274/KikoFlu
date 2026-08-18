@@ -1847,6 +1847,11 @@ class SEn extends S {
   String get refreshComplete => 'Refresh complete';
 
   @override
+  String scrapeComplete(int count) {
+    return 'Scraped online metadata for $count works';
+  }
+
+  @override
   String refreshFailed(String error) {
     return 'Refresh failed: $error';
   }
@@ -1891,6 +1896,55 @@ class SEn extends S {
 
   @override
   String get openFolder => 'Open Folder';
+
+  @override
+  String get supplementDownload => 'Supplement Download';
+
+  @override
+  String get supplementPickTitle => 'Diff & Supplement Download';
+
+  @override
+  String get supplementPickWorksTitle => 'Select works to compare';
+
+  @override
+  String get supplementSelectWorkFirst => 'Please select at least one work';
+
+  @override
+  String get supplementCompareSelected => 'Compare Selected';
+
+  @override
+  String get supplementAlreadyExists => 'Exists';
+
+  @override
+  String supplementMissingCount(Object count) {
+    return '$count missing';
+  }
+
+  @override
+  String get supplementDownloadNeedServer =>
+      'Configure a server address first to use supplement download';
+
+  @override
+  String get supplementComparing => 'Comparing online and local files...';
+
+  @override
+  String supplementCheckFailed(Object error) {
+    return 'Failed to compare online files: $error';
+  }
+
+  @override
+  String get noFilesNeedSupplement =>
+      'Local files are complete, no supplement needed';
+
+  @override
+  String supplementConfirmContent(Object count, Object size) {
+    return 'Found $count missing files ($size total). Add them to the download queue?';
+  }
+
+  @override
+  String supplementDownloadFailed(Object error) {
+    return 'Supplement download failed: $error';
+  }
 
   @override
   String get playlistLink => 'Playlist Link';

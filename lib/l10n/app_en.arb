@@ -821,6 +821,12 @@
   "@openFolderFailed": { "placeholders": { "error": { "type": "String" } } },
   "reloadingFromDisk": "Reloading from disk...",
   "refreshComplete": "Refresh complete",
+  "scrapeComplete": "Scraped online metadata for {count} works",
+  "@scrapeComplete": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
   "refreshFailed": "Refresh failed: {error}",
   "@refreshFailed": { "placeholders": { "error": { "type": "String" } } },
   "deleteSelectedWorksConfirm": "Are you sure you want to delete {count} selected works?",
@@ -838,6 +844,19 @@
   "exitSelection": "Exit selection",
   "reload": "Reload",
   "openFolder": "Open Folder",
+  "supplementDownload": "Supplement Download",
+  "supplementPickTitle": "Diff & Supplement Download",
+  "supplementPickWorksTitle": "Select works to compare",
+  "supplementSelectWorkFirst": "Please select at least one work",
+  "supplementCompareSelected": "Compare Selected",
+  "supplementAlreadyExists": "Exists",
+  "supplementMissingCount": "{count} missing",
+  "supplementDownloadNeedServer": "Configure a server address first to use supplement download",
+  "supplementComparing": "Comparing online and local files...",
+  "supplementCheckFailed": "Failed to compare online files: {error}",
+  "noFilesNeedSupplement": "Local files are complete, no supplement needed",
+  "supplementConfirmContent": "Found {count} missing files ({size} total). Add them to the download queue?",
+  "supplementDownloadFailed": "Supplement download failed: {error}",
 
   "playlistLink": "Playlist Link",
   "playlistLinkHint": "Paste playlist link, e.g.:\nhttps://www.asmr.one/playlist?id=...",

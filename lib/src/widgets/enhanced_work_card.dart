@@ -18,13 +18,17 @@ import 'privacy_blur_cover.dart';
 class EnhancedWorkCard extends ConsumerStatefulWidget {
   final Work work;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress; // 自定义长按行为（默认显示编辑收藏状态菜单）
   final int crossAxisCount;
+  final Widget Function()? localCoverBuilder; // 非空时优先显示本地封面
 
   const EnhancedWorkCard({
     super.key,
     required this.work,
     this.onTap,
+    this.onLongPress,
     this.crossAxisCount = 2,
+    this.localCoverBuilder,
   });
 
   @override
@@ -108,6 +112,8 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
           );
         };
 
+    final cardOnLongPress = widget.onLongPress ?? _onLongPress;
+
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
 
@@ -115,18 +121,21 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
     // 竖屏模式：2列显示中等卡片，3列显示紧凑卡片
     if (widget.crossAxisCount >= 5 ||
         (widget.crossAxisCount == 3 && !isLandscape)) {
-      return _buildCompactCard(
-          context, host, token, cardOnTap, displaySettings);
+      return _buildCompactCard(context, host, token, cardOnTap,
+          cardOnLongPress, displaySettings);
     } else if (widget.crossAxisCount >= 2) {
-      return _buildMediumCard(context, host, token, cardOnTap, displaySettings);
+      return _buildMediumCard(context, host, token, cardOnTap,
+          cardOnLongPress, displaySettings);
     } else {
-      return _buildFullCard(context, host, token, cardOnTap, displaySettings);
+      return _buildFullCard(context, host, token, cardOnTap,
+          cardOnLongPress, displaySettings);
     }
   }
 
   // 紧凑卡片 (3列布局)
   Widget _buildCompactCard(BuildContext context, String host, String token,
-      VoidCallback cardOnTap, WorkCardDisplaySettings displaySettings) {
+      VoidCallback cardOnTap, VoidCallback cardOnLongPress,
+      WorkCardDisplaySettings displaySettings) {
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     final titleFontSize =
@@ -138,7 +147,7 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
       elevation: 8,
       child: InkWell(
         onTap: cardOnTap,
-        onLongPress: _onLongPress,
+        onLongPress: cardOnLongPress,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min, // 让 Column 高度自适应
@@ -209,7 +218,8 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
 
   // 中等卡片 (2列布局)
   Widget _buildMediumCard(BuildContext context, String host, String token,
-      VoidCallback cardOnTap, WorkCardDisplaySettings displaySettings) {
+      VoidCallback cardOnTap, VoidCallback cardOnLongPress,
+      WorkCardDisplaySettings displaySettings) {
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     final titleFontSize =
@@ -228,7 +238,7 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
       elevation: 8,
       child: InkWell(
         onTap: cardOnTap,
-        onLongPress: _onLongPress,
+        onLongPress: cardOnLongPress,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -378,7 +388,8 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
 
   // 完整卡片 (列表布局)
   Widget _buildFullCard(BuildContext context, String host, String token,
-      VoidCallback cardOnTap, WorkCardDisplaySettings displaySettings) {
+      VoidCallback cardOnTap, VoidCallback cardOnLongPress,
+      WorkCardDisplaySettings displaySettings) {
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     final rjFontSize = displaySettings.scaleFontSize(isLandscape ? 11.0 : 10.0);
@@ -396,7 +407,7 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
       elevation: 4,
       child: InkWell(
         onTap: cardOnTap,
-        onLongPress: _onLongPress,
+        onLongPress: cardOnLongPress,
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -595,6 +606,11 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
   }
 
   Widget _buildCoverImage(BuildContext context, String host, String token) {
+    // 本地封面优先（本地下载卡片等场景）
+    if (widget.localCoverBuilder != null) {
+      return widget.localCoverBuilder!();
+    }
+
     // 使用缓存网络图片，减少滚动时的解码与网络开销，提升流畅度
     if (host.isEmpty) {
       return _buildPlaceholder(context);

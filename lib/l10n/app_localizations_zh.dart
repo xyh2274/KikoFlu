@@ -1794,6 +1794,11 @@ class SZh extends S {
   String get refreshComplete => '刷新完成';
 
   @override
+  String scrapeComplete(int count) {
+    return '已刮削补全 $count 个作品的在线元数据';
+  }
+
+  @override
   String refreshFailed(String error) {
     return '刷新失败: $error';
   }
@@ -1837,6 +1842,53 @@ class SZh extends S {
 
   @override
   String get openFolder => '打开文件夹';
+
+  @override
+  String get supplementDownload => '补充下载';
+
+  @override
+  String get supplementPickTitle => '差异对比与补充下载';
+
+  @override
+  String get supplementPickWorksTitle => '选择要对比的音声';
+
+  @override
+  String get supplementSelectWorkFirst => '请至少选择一个音声';
+
+  @override
+  String get supplementCompareSelected => '对比所选';
+
+  @override
+  String get supplementAlreadyExists => '已存在';
+
+  @override
+  String supplementMissingCount(Object count) {
+    return '缺失 $count 项';
+  }
+
+  @override
+  String get supplementDownloadNeedServer => '需要先配置服务器地址才能补充下载';
+
+  @override
+  String get supplementComparing => '正在对比在线与本地文件...';
+
+  @override
+  String supplementCheckFailed(Object error) {
+    return '对比在线文件失败: $error';
+  }
+
+  @override
+  String get noFilesNeedSupplement => '本地文件完整，无需补充下载';
+
+  @override
+  String supplementConfirmContent(Object count, Object size) {
+    return '发现 $count 个缺失文件（共 $size），是否加入下载队列？';
+  }
+
+  @override
+  String supplementDownloadFailed(Object error) {
+    return '补充下载失败: $error';
+  }
 
   @override
   String get playlistLink => '播放列表链接';
@@ -5286,6 +5338,11 @@ class SZhHant extends SZh {
   String get refreshComplete => '重新整理完成';
 
   @override
+  String scrapeComplete(int count) {
+    return '已刮削補全 $count 個作品的在線元資料';
+  }
+
+  @override
   String refreshFailed(String error) {
     return '重新整理失敗: $error';
   }
@@ -5329,6 +5386,53 @@ class SZhHant extends SZh {
 
   @override
   String get openFolder => '開啟資料夾';
+
+  @override
+  String get supplementDownload => '補充下載';
+
+  @override
+  String get supplementPickTitle => '差異比對與補充下載';
+
+  @override
+  String get supplementPickWorksTitle => '選擇要比對的音聲';
+
+  @override
+  String get supplementSelectWorkFirst => '請至少選擇一個音聲';
+
+  @override
+  String get supplementCompareSelected => '比對所選';
+
+  @override
+  String get supplementAlreadyExists => '已存在';
+
+  @override
+  String supplementMissingCount(Object count) {
+    return '缺失 $count 項';
+  }
+
+  @override
+  String get supplementDownloadNeedServer => '需要先設定伺服器位址才能補充下載';
+
+  @override
+  String get supplementComparing => '正在比對線上與本機檔案...';
+
+  @override
+  String supplementCheckFailed(Object error) {
+    return '比對線上檔案失敗: $error';
+  }
+
+  @override
+  String get noFilesNeedSupplement => '本機檔案完整，無需補充下載';
+
+  @override
+  String supplementConfirmContent(Object count, Object size) {
+    return '發現 $count 個缺失檔案（共 $size），是否加入下載佇列？';
+  }
+
+  @override
+  String supplementDownloadFailed(Object error) {
+    return '補充下載失敗: $error';
+  }
 
   @override
   String get playlistLink => '播放清單連結';

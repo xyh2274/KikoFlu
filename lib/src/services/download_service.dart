@@ -411,6 +411,7 @@ class DownloadService {
     Map<String, dynamic>? workMetadata,
     String? coverUrl,
     String? relativePath, // 相对路径，用于按文件树组织
+    bool forceRedownload = false, // 补充下载：强制移除旧的已完成记录并重新下载
   }) async {
     final safeFileName = relativePath != null && relativePath.isNotEmpty
         ? '${DownloadFilePathService.safeRelativePath(relativePath)}/'
@@ -432,18 +433,47 @@ class DownloadService {
 
     if (existingTask.id.isNotEmpty) {
       if (existingTask.status == DownloadStatus.completed) {
-        // 如果任务已完成但没有元数据，更新元数据
-        if (existingTask.workMetadata == null && workMetadata != null) {
-          final updatedTask = existingTask.copyWith(workMetadata: workMetadata);
-          _updateTask(updatedTask, immediate: true);
-          // 保存元数据到硬盘
-          await _saveWorkMetadata(workId, workMetadata, coverUrl);
-          return updatedTask;
+        if (forceRedownload) {
+          // 补充下载：移除旧的已完成任务记录（文件已缺失），重新加入下载队列
+          _tasks.removeWhere((t) => t.id == existingTask.id);
+          _log.info(
+            '补充下载：移除旧的已完成任务记录: ${existingTask.id} (${existingTask.fileName})',
+            tag: 'Download',
+          );
+        } else {
+          // 如果任务已完成但没有元数据，更新元数据
+          if (existingTask.workMetadata == null && workMetadata != null) {
+            final updatedTask = existingTask.copyWith(workMetadata: workMetadata);
+            _updateTask(updatedTask, immediate: true);
+            // 保存元数据到硬盘
+            await _saveWorkMetadata(workId, workMetadata, coverUrl);
+            return updatedTask;
+          }
+          return existingTask;
+        }
+      } else if (forceRedownload) {
+        // 补充下载：将已失败/暂停的任务重置为等待状态，重新加入下载队列
+        if (existingTask.status == DownloadStatus.failed ||
+            existingTask.status == DownloadStatus.paused) {
+          _updateTask(
+            existingTask.copyWith(
+              status: DownloadStatus.pending,
+              attemptCount: 0,
+              error: null,
+            ),
+            immediate: true,
+          );
+          unawaited(_processQueue());
+          _log.info(
+            '补充下载：重置失败任务为等待下载: ${existingTask.id} (${existingTask.fileName})',
+            tag: 'Download',
+          );
         }
         return existingTask;
+      } else {
+        // 如果任务存在但未完成，返回现有任务
+        return existingTask;
       }
-      // 如果任务存在但未完成，返回现有任务
-      return existingTask;
     }
 
     // 检查缓存中是否已有此文件
@@ -656,7 +686,6 @@ class DownloadService {
       // 节流：限制进度更新频率
       int lastUpdateTime = 0;
       const updateInterval = 500; // 500ms 更新一次
-      int? firstReportedTotal; // 记录首次收到的total，用于诊断进度跳变
 
       _dio.options.headers.addAll(StorageService.serverCookieHeaders);
 
@@ -1672,6 +1701,90 @@ class DownloadService {
     }
   }
 
+  /// 扫描下载目录，返回磁盘上存在的作品目录元数据。
+  /// 与 [reloadMetadataFromDisk] 不同：即使某个作品已无任何下载任务
+  /// （例如本地文件被全部误删、只剩 work_metadata.json），只要目录存在
+  /// 也会返回，供"已下载"页展示并提供补充下载入口。
+  Future<Map<int, Map<String, dynamic>>> getDiskWorks() async {
+    final result = <int, Map<String, dynamic>>{};
+    try {
+      final downloadDir = await _getDownloadDirectory();
+      if (!await downloadDir.exists()) return result;
+
+      await for (final entity in downloadDir.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final parsed = _localMetadataService.parseWorkFolder(entity);
+        if (parsed == null) continue;
+
+        final metadata = await _loadWorkMetadata(parsed.id);
+        if (metadata != null) {
+          result[parsed.id] = metadata;
+        } else {
+          // 目录存在但无 work_metadata.json，尝试生成本地基础元数据
+          final fallback = await _localMetadataService.buildFallbackMetadata(
+            workId: parsed.id,
+            workDir: entity,
+            directoryName: p.basename(entity.path),
+          );
+          result[parsed.id] = fallback;
+        }
+      }
+    } catch (e) {
+      _log.error('扫描本地作品目录失败: $e', tag: 'Download');
+    }
+    return result;
+  }
+
+  // 判断本地元数据是否缺少可在线补全的关键字段（标签/声优/发布日期）
+  static bool needsOnlineMetadataScrape(Map<String, dynamic> metadata) {
+    if (metadata['tags'] is! List || (metadata['tags'] as List).isEmpty) {
+      return true;
+    }
+    if (metadata['vas'] is! List || (metadata['vas'] as List).isEmpty) {
+      return true;
+    }
+    if (metadata['release'] == null ||
+        (metadata['release'] as String? ?? '').trim().isEmpty) {
+      return true;
+    }
+    return false;
+  }
+
+  // 刮削在线元数据：拉取在线作品详情，合并补全本地缺失字段并写回 work_metadata.json。
+  // 本地元数据已完整（tags/声优/日期齐全）时直接跳过，避免无谓请求。
+  Future<bool> scrapeWorkMetadata(int workId) async {
+    try {
+      final localMetadata = await _loadWorkMetadata(workId);
+      if (localMetadata == null) return false;
+      if (!needsOnlineMetadataScrape(localMetadata)) return false;
+
+      final host = StorageService.getString('server_host') ?? '';
+      final token = StorageService.getString('auth_token') ?? '';
+      if (host.isEmpty) return false;
+
+      final apiService = KikoeruApiService();
+      apiService.init(token, host);
+      final online = await apiService.getWork(workId);
+      if (online.isEmpty) return false;
+
+      // 合并：以在线详情为基底，保留本地非空字段（本地文件树/封面等不丢失）
+      final merged = Map<String, dynamic>.from(online);
+      localMetadata.forEach((key, value) {
+        if (value == null) return;
+        if (value is String && value.trim().isEmpty) return;
+        if (value is List && value.isEmpty) return;
+        if (value is Map && value.isEmpty) return;
+        merged[key] = value;
+      });
+      await _saveWorkMetadata(workId, merged, null);
+      _log.info('已刮削并补全在线元数据: workId=$workId', tag: 'Download');
+      return true;
+    } catch (e) {
+      _log.error('刮削在线元数据失败: workId=$workId, 错误: $e', tag: 'Download');
+      return false;
+    }
+  }
+
   Future<void> _saveTasks() async {
     try {
       final prefs = await StorageService.getPrefs();
@@ -1721,7 +1834,7 @@ class DownloadService {
               rootPath: workDir.path,
               relativePath: task.fileName,
             );
-            return '${filePath}.downloading' == entity.path;
+            return '$filePath.downloading' == entity.path;
           });
 
           if (!hasCorrespondingTask) {
@@ -2159,6 +2272,168 @@ class DownloadService {
     }
     _log.info('已删除 RJ$workId 的全部任务及文件', tag: 'Download');
   }
+
+  // ==================== M4: 补充下载 ====================
+
+  /// 对比在线音声文件与本地磁盘文件，返回需要补充下载的文件列表。
+  /// 适用于误删本地文件后的恢复：以在线文件树为准，找出磁盘上缺失的文件。
+  /// [workDirPath] 可显式指定作品目录；缺省时按 workId 定位。
+  Future<SupplementDiffResult> checkSupplementDiff(
+    int workId, {
+    String? workDirPath,
+  }) async {
+    try {
+      // 1. 获取在线音轨列表（优先走缓存，未命中则请求网络）
+      final apiService = KikoeruApiService();
+      final host = StorageService.getString('server_host') ?? '';
+      final token = StorageService.getString('auth_token') ?? '';
+      if (host.isEmpty) {
+        return const SupplementDiffResult(error: '未配置服务器地址');
+      }
+      apiService.init(token, host);
+      final tracks = await apiService.getWorkTracks(workId);
+
+      // 2. 展平在线文件树，并清洗出本地磁盘应有的相对路径
+      final onlineFiles = <SupplementFile>[];
+      void walk(List<dynamic> items, String parentPath) {
+        for (final item in items) {
+          if (item is! Map) continue;
+          final type = item['type'] as String? ?? '';
+          final title = item['title'] as String? ?? '';
+          if (title.isEmpty) continue;
+
+          if (type == 'folder') {
+            final folderPath =
+                parentPath.isEmpty ? title : '$parentPath/$title';
+            final children = item['children'];
+            if (children is List) walk(children, folderPath);
+          } else {
+            final rawPath = parentPath.isEmpty ? title : '$parentPath/$title';
+            onlineFiles.add(SupplementFile(
+              title: title,
+              localRelativePath:
+                  DownloadFilePathService.safeRelativePath(rawPath),
+              hash: item['hash'] as String?,
+              size: item['size'] as int?,
+              mediaDownloadUrl: item['mediaDownloadUrl'] as String?,
+            ));
+          }
+        }
+      }
+      walk(tracks, '');
+
+      // 3. 扫描本地磁盘上实际存在的文件（跳过元数据/封面/临时文件）
+      final localPaths = <String>{};
+      final dirPath = workDirPath ?? (await getWorkDirectory(workId)).path;
+      final workDir = Directory(dirPath);
+      if (await workDir.exists()) {
+        await for (final entity
+            in workDir.list(recursive: true, followLinks: false)) {
+          if (entity is! File) continue;
+          final fileName = p.basename(entity.path);
+          if (LocalWorkMetadataService.shouldSkipMetadataFile(
+            fileName,
+            isRoot: false,
+          )) {
+            continue;
+          }
+          final rel = p.relative(entity.path, from: dirPath);
+          localPaths.add(DownloadFilePathService.normalizeRelativePath(rel));
+        }
+      }
+
+      // 4. 对比得出缺失文件
+      final missing = onlineFiles
+          .where((f) => !localPaths.contains(f.localRelativePath))
+          .toList();
+
+      // 5. 构建完整文件树（以在线列表为准，从根目录开始），
+      //    每个文件标记本地是否存在，本地缺失的整个目录也会在树中体现
+      final tree = buildSupplementFileTree(onlineFiles, localPaths);
+
+      _log.info(
+        '补充下载对比 RJ$workId: 在线 ${onlineFiles.length} 个, '
+        '本地 ${localPaths.length} 个, 缺失 ${missing.length} 个',
+        tag: 'Download',
+      );
+      return SupplementDiffResult(
+        missing: missing,
+        tree: tree,
+        onlineCount: onlineFiles.length,
+        localCount: localPaths.length,
+      );
+    } catch (e) {
+      _log.error('补充下载对比失败 RJ$workId: $e', tag: 'Download');
+      return SupplementDiffResult(error: e.toString());
+    }
+  }
+
+  /// 为缺失文件创建补充下载任务，返回成功加入队列的数量。
+  /// [workMetadata]/[coverUrl] 透传给 [addTask]，保证离线详情可用。
+  Future<int> supplementDownloads(
+    int workId,
+    List<SupplementFile> missing, {
+    Map<String, dynamic>? workMetadata,
+    String? coverUrl,
+  }) async {
+    final host = StorageService.getString('server_host') ?? '';
+    final token = StorageService.getString('auth_token') ?? '';
+    final workTitle = (workMetadata?['title'] as String?) ?? 'RJ$workId';
+
+    int added = 0;
+    for (final file in missing) {
+      // 构造下载 URL
+      String downloadUrl = file.mediaDownloadUrl ?? '';
+      if (downloadUrl.isNotEmpty) {
+        if (downloadUrl.startsWith('/') && host.isNotEmpty) {
+          downloadUrl = '${_normalizeHttpHost(host)}$downloadUrl';
+        }
+        if (token.isNotEmpty && !downloadUrl.contains('token=')) {
+          downloadUrl = downloadUrl.contains('?')
+              ? '$downloadUrl&token=$token'
+              : '$downloadUrl?token=$token';
+        }
+      } else if (host.isNotEmpty && file.hash != null) {
+        downloadUrl =
+            '${_normalizeHttpHost(host)}/api/media/download/${file.hash}/'
+            '${Uri.encodeComponent(file.title)}?token=$token';
+      }
+      if (downloadUrl.isEmpty) {
+        _log.warning(
+          '补充下载跳过（无下载地址）: ${file.localRelativePath}',
+          tag: 'Download',
+        );
+        continue;
+      }
+
+      await addTask(
+        workId: workId,
+        workTitle: workTitle,
+        fileName: file.localRelativePath,
+        downloadUrl: downloadUrl,
+        hash: file.hash,
+        totalBytes: file.size,
+        workMetadata: workMetadata,
+        coverUrl: coverUrl,
+        forceRedownload: true,
+      );
+      added++;
+    }
+    return added;
+  }
+
+  /// 将 host 规范化为带协议的完整地址（localhost/内网使用 http，其余使用 https）
+  static String _normalizeHttpHost(String host) {
+    if (host.startsWith('http://') || host.startsWith('https://')) {
+      return host;
+    }
+    if (host.contains('localhost') ||
+        host.startsWith('127.0.0.1') ||
+        host.startsWith('192.168.')) {
+      return 'http://$host';
+    }
+    return 'https://$host';
+  }
 }
 
 /// 从原 kikoeru 导入的结果汇总。
@@ -2179,6 +2454,106 @@ class ImportSkip {
   final String path;
   final String reason;
   const ImportSkip({required this.path, required this.reason});
+}
+
+/// 在线作品中的单个文件（用于与本地对比的补充下载场景）
+class SupplementFile {
+  final String title; // 在线文件名
+  final String localRelativePath; // 清洗后的本地相对路径
+  final String? hash;
+  final int? size;
+  final String? mediaDownloadUrl;
+
+  const SupplementFile({
+    required this.title,
+    required this.localRelativePath,
+    this.hash,
+    this.size,
+    this.mediaDownloadUrl,
+  });
+}
+
+/// 在线文件树节点：以网络传来的列表为准，从根目录开始组织。
+/// [exists] 标记该文件本地磁盘上是否已存在（文件夹节点恒为 false，
+/// 其子项的 [exists] 表示目录内文件的存在情况）。
+class SupplementFileNode {
+  final String title; // 文件/文件夹名
+  final String localRelativePath; // 相对作品根目录的完整路径
+  final bool isFolder;
+  final bool exists; // 文件：本地是否已存在
+  final SupplementFile? file; // 文件节点对应的在线文件信息
+  final List<SupplementFileNode> children;
+
+  const SupplementFileNode({
+    required this.title,
+    required this.localRelativePath,
+    required this.isFolder,
+    this.exists = false,
+    this.file,
+    this.children = const [],
+  });
+}
+
+/// 根据在线文件列表构建完整文件树（从根目录开始），并标记每个文件的本地存在状态
+List<SupplementFileNode> buildSupplementFileTree(
+  List<SupplementFile> files,
+  Set<String> localPaths,
+) {
+  final root = <SupplementFileNode>[];
+  for (final f in files) {
+    final parts = f.localRelativePath.split('/');
+    var siblings = root;
+    SupplementFileNode? folder;
+    for (var i = 0; i < parts.length - 1; i++) {
+      final seg = parts[i];
+      folder = null;
+      for (final c in siblings) {
+        if (c.isFolder && c.title == seg) {
+          folder = c;
+          break;
+        }
+      }
+      if (folder == null) {
+        folder = SupplementFileNode(
+          title: seg,
+          localRelativePath: parts.take(i + 1).join('/'),
+          isFolder: true,
+          children: <SupplementFileNode>[],
+        );
+        siblings.add(folder);
+      }
+      siblings = folder.children;
+    }
+    siblings.add(SupplementFileNode(
+      title: parts.last,
+      localRelativePath: f.localRelativePath,
+      isFolder: false,
+      exists: localPaths.contains(f.localRelativePath),
+      file: f,
+    ));
+  }
+  return root;
+}
+
+/// 在线与本地文件对比结果
+class SupplementDiffResult {
+  final List<SupplementFile> missing; // 缺失（需要补充下载）的文件
+  final List<SupplementFileNode> tree; // 在线完整文件树（根目录开始，含存在状态）
+  final int onlineCount; // 在线文件总数
+  final int localCount; // 本地磁盘文件总数
+  final String? error; // 对比失败时的错误信息
+
+  const SupplementDiffResult({
+    this.missing = const [],
+    this.tree = const [],
+    this.onlineCount = 0,
+    this.localCount = 0,
+    this.error,
+  });
+
+  bool get isEmpty => missing.isEmpty;
+
+  int get totalBytes => missing.fold(0, (s, f) => s + (f.size ?? 0));
 }
 
 class _DirValidation {
