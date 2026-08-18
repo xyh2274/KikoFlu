@@ -1570,6 +1570,34 @@ class SJa extends S {
   String get hasNewVersion => '新しいバージョン';
 
   @override
+  String get storageBreakdown => 'ストレージ内訳';
+
+  @override
+  String get storageCache => 'アプリキャッシュ';
+
+  @override
+  String get storageAudioCache => '音声キャッシュ';
+
+  @override
+  String get storageImageCache => '画像キャッシュ';
+
+  @override
+  String get storageDownloads => 'ダウンロードファイル';
+
+  @override
+  String get storageTotal => '合計';
+
+  @override
+  String get includeDownloads => 'ダウンロードファイルを含む';
+
+  @override
+  String get includeDownloadsWarning =>
+      'これにより、すべてのダウンロードファイルが削除され、ダウンロードタスクがリセットされます';
+
+  @override
+  String get cacheAndDownloadsCleared => 'キャッシュとダウンロードファイルがクリアされました';
+
+  @override
   String get themeMode => 'テーマモード';
 
   @override

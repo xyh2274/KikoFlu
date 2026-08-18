@@ -1602,6 +1602,34 @@ class SRu extends S {
   String get hasNewVersion => 'Новая версия';
 
   @override
+  String get storageBreakdown => 'Распределение хранилища';
+
+  @override
+  String get storageCache => 'Кэш приложения';
+
+  @override
+  String get storageAudioCache => 'Аудио кэш';
+
+  @override
+  String get storageImageCache => 'Кэш изображений';
+
+  @override
+  String get storageDownloads => 'Загруженные файлы';
+
+  @override
+  String get storageTotal => 'Всего';
+
+  @override
+  String get includeDownloads => 'Включить загруженные файлы';
+
+  @override
+  String get includeDownloadsWarning =>
+      'Это удалит все загруженные файлы и сбросит задачи загрузки';
+
+  @override
+  String get cacheAndDownloadsCleared => 'Кэш и загруженные файлы очищены';
+
+  @override
   String get themeMode => 'Режим темы';
 
   @override

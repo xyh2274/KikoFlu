@@ -571,6 +571,17 @@
   "confirmClearCacheMessage": "すべてのキャッシュをクリアしますか？この操作は取り消せません。",
   "clearCacheFailedWithError": "キャッシュのクリアに失敗: {error}",
   "hasNewVersion": "新しいバージョン",
+  
+  "storageBreakdown": "ストレージ内訳",
+  "storageCache": "アプリキャッシュ",
+  "storageAudioCache": "音声キャッシュ",
+  "storageImageCache": "画像キャッシュ",
+  "storageDownloads": "ダウンロードファイル",
+  "storageTotal": "合計",
+  
+  "includeDownloads": "ダウンロードファイルを含む",
+  "includeDownloadsWarning": "これにより、すべてのダウンロードファイルが削除され、ダウンロードタスクがリセットされます",
+  "cacheAndDownloadsCleared": "キャッシュとダウンロードファイルがクリアされました",
 
   "themeMode": "テーマモード",
   "colorTheme": "カラーテーマ",

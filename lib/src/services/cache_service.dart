@@ -586,6 +586,42 @@ class CacheService {
     }
   }
 
+  // O6: 获取下载目录占用大小（用于全局存储预算）
+  static Future<int> getDownloadSize() async {
+    try {
+      int totalSize = 0;
+      final downloadDir = await DownloadService.instance.getDownloadDirectory();
+      if (await downloadDir.exists()) {
+        await for (final entity in downloadDir.list(recursive: true)) {
+          if (entity is File) {
+            totalSize += await entity.length();
+          }
+        }
+      }
+      return totalSize;
+    } catch (e) {
+      _log.captureOutput('[Cache] 获取下载目录大小失败: $e');
+      return 0;
+    }
+  }
+
+  // O6: 获取全局存储总大小（缓存 + 下载）
+  static Future<int> getTotalStorageSize() async {
+    final cacheSize = await getCacheSize();
+    final downloadSize = await getDownloadSize();
+    return cacheSize + downloadSize;
+  }
+
+  // O7: 获取音频缓存目录大小（公开方法供界面使用）
+  static Future<int> getAudioCacheSize() async {
+    return _getAudioCacheSize();
+  }
+
+  // O7: 获取图片缓存目录大小（公开方法供界面使用）
+  static Future<int> getImageCacheSize() async {
+    return _getImageCacheSize();
+  }
+
   // 获取音频缓存目录大小
   static Future<int> _getAudioCacheSize() async {
     try {

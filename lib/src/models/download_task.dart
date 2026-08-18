@@ -17,6 +17,8 @@ class DownloadTask extends Equatable {
   final String? hash;
   final int? totalBytes;
   final int downloadedBytes;
+  final int priority; // O4 下载优先级，数值越大越先调度
+  final int attemptCount; // O3 已尝试下载次数（用于自动重试）
   final DownloadStatus status;
   final String? error;
   final DateTime createdAt;
@@ -32,6 +34,8 @@ class DownloadTask extends Equatable {
     this.hash,
     this.totalBytes,
     this.downloadedBytes = 0,
+    this.priority = 0,
+    this.attemptCount = 0,
     this.status = DownloadStatus.pending,
     this.error,
     required this.createdAt,
@@ -53,6 +57,8 @@ class DownloadTask extends Equatable {
     String? hash,
     int? totalBytes,
     int? downloadedBytes,
+    int? priority,
+    int? attemptCount,
     DownloadStatus? status,
     String? error,
     DateTime? createdAt,
@@ -68,6 +74,8 @@ class DownloadTask extends Equatable {
       hash: hash ?? this.hash,
       totalBytes: totalBytes ?? this.totalBytes,
       downloadedBytes: downloadedBytes ?? this.downloadedBytes,
+      priority: priority ?? this.priority,
+      attemptCount: attemptCount ?? this.attemptCount,
       status: status ?? this.status,
       error: error ?? this.error,
       createdAt: createdAt ?? this.createdAt,
@@ -86,6 +94,8 @@ class DownloadTask extends Equatable {
       'hash': hash,
       'totalBytes': totalBytes,
       'downloadedBytes': downloadedBytes,
+      'priority': priority,
+      'attemptCount': attemptCount,
       'status': status.name,
       'error': error,
       'createdAt': createdAt.toIso8601String(),
@@ -104,6 +114,8 @@ class DownloadTask extends Equatable {
       hash: json['hash'] as String?,
       totalBytes: json['totalBytes'] as int?,
       downloadedBytes: json['downloadedBytes'] as int? ?? 0,
+      priority: json['priority'] as int? ?? 0,
+      attemptCount: json['attemptCount'] as int? ?? 0,
       status: DownloadStatus.values.firstWhere(
         (e) => e.name == json['status'],
         orElse: () => DownloadStatus.pending,
@@ -128,6 +140,8 @@ class DownloadTask extends Equatable {
         hash,
         totalBytes,
         downloadedBytes,
+        priority,
+        attemptCount,
         status,
         error,
         createdAt,

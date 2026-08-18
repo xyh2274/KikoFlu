@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 
@@ -13,6 +14,9 @@ import 'download_path_service.dart';
 import 'download_file_path_service.dart';
 import 'local_work_metadata_service.dart';
 import 'log_service.dart';
+import 'storage_space_service.dart';
+import 'notification_service.dart';
+import 'network_proxy_service.dart';
 
 final _log = LogService.instance;
 
@@ -20,7 +24,10 @@ class DownloadService {
   static DownloadService? _instance;
   static DownloadService get instance => _instance ??= DownloadService._();
 
-  DownloadService._();
+  DownloadService._() {
+    // 若配置了网络代理（如宿主机 Clash 7897），应用到下载请求
+    NetworkProxyService.applyProxy(_dio);
+  }
 
   final Map<String, CancelToken> _cancelTokens = {};
   final StreamController<List<DownloadTask>> _tasksController =
@@ -32,6 +39,12 @@ class DownloadService {
 
   // 并发下载控制
   static const int _maxConcurrentDownloads = 20;
+  // O1 空间检查的安全余量（预留，避免可用空间恰好等于所需时仍失败）
+  static const int _spaceMarginBytes = 32 * 1024 * 1024;
+  // O3 自动重试参数：最大次数、指数退避基准秒数、退避上限秒数
+  static const int _maxRetries = 3;
+  static const int _retryBaseSec = 2;
+  static const int _retryMaxSec = 30;
   int _activeDownloadCount = 0;
   bool _isProcessingQueue = false;
 
@@ -55,6 +68,9 @@ class DownloadService {
   static const String _tasksKey = 'download_tasks';
 
   Future<void> initialize() async {
+    // 初始化通知服务（O5）
+    await NotificationService.instance.initialize();
+    
     await _loadTasks();
     // 恢复未完成的下载任务
     for (final task in _tasks) {
@@ -70,6 +86,9 @@ class DownloadService {
       _log.error('启动时同步失败: $e', tag: 'Download');
       // 同步失败则保持当前状态，等待用户手动刷新
     }
+    
+    // O9: 启动时清理孤立的临时文件
+    unawaited(_cleanupOrphanedTempFiles());
   }
 
   Future<Directory> _getDownloadDirectory() async {
@@ -508,9 +527,15 @@ class DownloadService {
     if (_isProcessingQueue) return;
     _isProcessingQueue = true;
     try {
-      // 获取所有等待中的任务
-      final pendingTasks =
-          _tasks.where((t) => t.status == DownloadStatus.pending).toList();
+      // 获取所有等待中的任务，按优先级降序、创建时间升序调度（O4）
+      final pendingTasks = _tasks
+          .where((t) => t.status == DownloadStatus.pending)
+          .toList()
+        ..sort((a, b) {
+          final prioCmp = b.priority.compareTo(a.priority);
+          if (prioCmp != 0) return prioCmp;
+          return a.createdAt.compareTo(b.createdAt);
+        });
 
       if (pendingTasks.isNotEmpty) {
         _log.debug(
@@ -557,6 +582,34 @@ class DownloadService {
     _log.debug('下载路径: filePath=$filePath, tempFile=$tempFilePath',
         tag: 'Download');
 
+    // O1: 下载前检查目标磁盘剩余空间（仅当任务声明确切大小且能查询到可用空间时生效）
+    if (task.totalBytes != null && task.totalBytes! > 0) {
+      final freeBytes =
+          await StorageSpaceService.getAvailableBytes(Directory(workDir));
+      if (freeBytes != null) {
+        int existing = 0;
+        if (await tempFile.exists()) {
+          existing = await tempFile.length();
+        }
+        final needed = task.totalBytes! - existing;
+        if (needed > 0 && freeBytes < needed + _spaceMarginBytes) {
+          _log.warning(
+            '存储空间不足: 需要 ${StorageSpaceService.formatBytes(needed + _spaceMarginBytes)}, 可用 ${StorageSpaceService.formatBytes(freeBytes)}, file=${task.fileName}',
+            tag: 'Download',
+          );
+          _updateTask(
+            task.copyWith(
+              status: DownloadStatus.failed,
+              error: '存储空间不足：需要 ${StorageSpaceService.formatBytes(needed + _spaceMarginBytes)}, 可用 ${StorageSpaceService.formatBytes(freeBytes)}',
+            ),
+            immediate: true,
+          );
+          _cancelTokens.remove(task.id);
+          return;
+        }
+      }
+    }
+
     // 确保父目录存在
     await file.parent.create(recursive: true);
 
@@ -588,6 +641,12 @@ class DownloadService {
             );
             _updateTask(completedTask, immediate: true);
             _cancelTokens.remove(task.id);
+            
+            // O5: 发送下载完成通知
+            unawaited(NotificationService.instance.showDownloadCompleteNotification(
+              title: '下载完成',
+              body: task.fileName,
+            ));
             return;
           }
         }
@@ -601,50 +660,115 @@ class DownloadService {
 
       _dio.options.headers.addAll(StorageService.serverCookieHeaders);
 
-      _log.info('开始网络下载: ${task.fileName}, url=${task.downloadUrl}',
+      // O8: 断点续传 - 检查临时文件是否存在，如果存在则从断点续传
+      int downloadedBytes = 0;
+      bool isResuming = false;
+      if (await tempFile.exists()) {
+        downloadedBytes = await tempFile.length();
+        if (downloadedBytes > 0) {
+          isResuming = true;
+          _log.info('发现临时文件，尝试断点续传: ${task.fileName}, 已下载 ${StorageSpaceService.formatBytes(downloadedBytes)}',
+              tag: 'Download');
+          // 添加 Range 请求头
+          _dio.options.headers['Range'] = 'bytes=$downloadedBytes-';
+        }
+      }
+
+      _log.info('开始网络下载: ${task.fileName}, url=${task.downloadUrl}${isResuming ? " (断点续传)" : ""}',
           tag: 'Download');
 
-      // 下载到临时文件，完成后再重命名
-      await _dio.download(
+      // O8: 使用 ResponseType.stream 支持断点续传
+      final response = await _dio.get<ResponseBody>(
         task.downloadUrl,
-        tempFilePath,
         cancelToken: cancelToken,
-        onReceiveProgress: (received, total) {
-          if (total != -1) {
-            // 诊断：检测服务器报告的总大小是否变化（可能导致进度条跳变）
-            if (firstReportedTotal == null) {
-              firstReportedTotal = total;
-              if (task.totalBytes != null &&
-                  task.totalBytes! > 0 &&
-                  task.totalBytes != total) {
-                _log.warning(
-                  '服务器报告的文件大小($total)与任务记录的大小(${task.totalBytes})不一致: ${task.fileName}',
-                  tag: 'Download',
-                );
-              }
-            } else if (firstReportedTotal != total) {
-              _log.warning(
-                '下载过程中文件总大小发生变化: $firstReportedTotal -> $total (${task.fileName})',
-                tag: 'Download',
-              );
-              firstReportedTotal = total;
-            }
-
-            final now = DateTime.now().millisecondsSinceEpoch;
-            // 只在间隔足够时才更新，避免过于频繁的更新
-            if (now - lastUpdateTime > updateInterval || received == total) {
-              lastUpdateTime = now;
-              _updateTask(task.copyWith(
-                status: DownloadStatus.downloading,
-                downloadedBytes: received,
-                totalBytes: total,
-              )); // 不立即保存，使用延迟保存
-            }
-          }
-        },
+        options: Options(responseType: ResponseType.stream),
       );
 
-      // 下载完成，重命名临时文件为最终文件
+      if (response.data == null) {
+        throw Exception('响应数据为空');
+      }
+
+      // 检查服务器是否支持断点续传（返回 206 表示支持）
+      final statusCode = response.statusCode ?? 0;
+      if (isResuming && statusCode != 206) {
+        _log.warning('服务器不支持断点续传（状态码: $statusCode），重新开始下载',
+            tag: 'Download');
+        // 删除临时文件，重新开始下载
+        if (await tempFile.exists()) {
+          await tempFile.delete();
+        }
+        downloadedBytes = 0;
+        isResuming = false;
+      }
+
+      // 获取文件总大小
+      final contentLengthHeader = response.headers.value('content-length');
+      final contentLength = contentLengthHeader != null ? int.tryParse(contentLengthHeader) : null;
+      final totalBytes = isResuming && contentLength != null
+          ? contentLength + downloadedBytes
+          : contentLength;
+
+      // 打开文件（追加或覆盖模式）
+      final fileSink = await tempFile.open(
+        mode: isResuming ? FileMode.append : FileMode.write,
+      );
+
+      try {
+        int receivedBytes = downloadedBytes;
+        
+        await for (final chunk in response.data!.stream) {
+          if (cancelToken.isCancelled) {
+            break;
+          }
+          
+          await fileSink.writeFrom(chunk);
+          receivedBytes += chunk.length;
+
+          // 更新进度
+          final now = DateTime.now().millisecondsSinceEpoch;
+          if (now - lastUpdateTime > updateInterval || 
+              (totalBytes != null && receivedBytes == totalBytes)) {
+            lastUpdateTime = now;
+            _updateTask(task.copyWith(
+              status: DownloadStatus.downloading,
+              downloadedBytes: receivedBytes,
+              totalBytes: totalBytes,
+            ));
+          }
+        }
+      } finally {
+        await fileSink.close();
+      }
+
+      // O2: 下载文件大小完整性校验（服务器未报告大小或无预期大小则跳过）
+      final currentTaskBeforeRename =
+          _tasks.firstWhere((t) => t.id == task.id, orElse: () => task);
+      final expectedBytes =
+          currentTaskBeforeRename.totalBytes ?? task.totalBytes;
+      final actualBytes = await tempFile.length();
+      if (expectedBytes != null &&
+          expectedBytes > 0 &&
+          actualBytes < expectedBytes) {
+        _log.error(
+          '完整性校验失败: ${task.fileName}, 预期 $expectedBytes 字节, 实际 $actualBytes 字节',
+          tag: 'Download',
+        );
+        // 清理损坏的临时文件
+        try {
+          if (await tempFile.exists()) await tempFile.delete();
+        } catch (_) {}
+        _updateTask(
+          task.copyWith(
+            status: DownloadStatus.failed,
+            error: '完整性校验失败：下载文件不完整（预期 ${StorageSpaceService.formatBytes(expectedBytes)}, 实际 ${StorageSpaceService.formatBytes(actualBytes)}）',
+          ),
+          immediate: true,
+        );
+        _cancelTokens.remove(task.id);
+        return;
+      }
+
+      // 校验通过，重命名临时文件为最终文件
       await tempFile.rename(filePath);
 
       _log.info('下载完成: ${task.fileName}', tag: 'Download');
@@ -658,6 +782,12 @@ class DownloadService {
       );
       _updateTask(completedTask, immediate: true); // 完成时立即保存
       _cancelTokens.remove(task.id);
+      
+      // O5: 发送下载完成通知
+      unawaited(NotificationService.instance.showDownloadCompleteNotification(
+        title: '下载完成',
+        body: task.fileName,
+      ));
     } catch (e) {
       if (e is DioException && e.type == DioExceptionType.cancel) {
         _log.info('下载已取消: ${task.fileName}', tag: 'Download');
@@ -666,42 +796,94 @@ class DownloadService {
       } else if (e is PathNotFoundException) {
         _log.error('路径不存在: ${task.fileName}, filePath=$filePath, error=$e',
             tag: 'Download');
-        _updateTask(
-            task.copyWith(
-              status: DownloadStatus.failed,
-              error: e.toString(),
-            ),
-            immediate: true);
+        _failNoRetry(task, '路径不存在: $e');
       } else if (e is FileSystemException) {
         _log.error('文件系统错误: ${task.fileName}, filePath=$filePath, error=$e',
             tag: 'Download');
-        _updateTask(
-            task.copyWith(
-              status: DownloadStatus.failed,
-              error: e.toString(),
-            ),
-            immediate: true);
+        _failNoRetry(task, '文件系统错误: $e');
       } else if (e is DioException) {
         _log.error(
             '网络错误: ${task.fileName}, type=${e.type}, message=${e.message}, url=${task.downloadUrl}',
             tag: 'Download');
-        _updateTask(
-            task.copyWith(
-              status: DownloadStatus.failed,
-              error: e.toString(),
-            ),
-            immediate: true);
+        if (_isRetryableDioError(e)) {
+          _scheduleRetry(task, e.toString());
+        } else {
+          _failNoRetry(task, '下载失败: ${e.message}');
+        }
       } else {
         _log.error('下载失败: ${task.fileName}, error=$e', tag: 'Download');
-        _updateTask(
-            task.copyWith(
-              status: DownloadStatus.failed,
-              error: e.toString(),
-            ),
-            immediate: true);
+        _failNoRetry(task, e.toString());
       }
       _cancelTokens.remove(task.id);
     }
+  }
+
+  /// 判断 Dio 错误是否可自动重试（网络类错误可重试，协议/服务器状态类不重试）
+  static bool _isRetryableDioError(DioException e) {
+    return switch (e.type) {
+      DioExceptionType.connectionTimeout ||
+      DioExceptionType.sendTimeout ||
+      DioExceptionType.receiveTimeout ||
+      DioExceptionType.connectionError ||
+      DioExceptionType.unknown => true,
+      _ => false,
+    };
+  }
+
+  /// 失败且不自动重试
+  void _failNoRetry(DownloadTask task, String error) {
+    _updateTask(
+      task.copyWith(status: DownloadStatus.failed, error: error),
+      immediate: true,
+    );
+  }
+
+  /// O3: 失败后按指数退避自动重试，超过最大次数则置失败
+  void _scheduleRetry(DownloadTask task, String message) {
+    final attempt = task.attemptCount + 1;
+    if (attempt > _maxRetries) {
+      _log.error('达到最大重试次数($_maxRetries): ${task.fileName}', tag: 'Download');
+      _failNoRetry(task, '下载失败: $message');
+      return;
+    }
+    var backoffSec = _retryBaseSec * (1 << (attempt - 1));
+    if (backoffSec > _retryMaxSec) backoffSec = _retryMaxSec;
+    _log.info(
+        '${task.fileName} 将在 $backoffSec 秒后自动重试($attempt/$_maxRetries)',
+        tag: 'Download');
+    _updateTask(
+      task.copyWith(
+        status: DownloadStatus.failed,
+        attemptCount: attempt,
+        error: '下载失败，$backoffSec 秒后自动重试($attempt/$_maxRetries)',
+      ),
+      immediate: true,
+    );
+
+    Timer(Duration(seconds: backoffSec), () {
+      // 重试仅当任务仍存在且处于失败状态，避免覆盖用户手动操作
+      DownloadTask? latest;
+      for (final t in _tasks) {
+        if (t.id == task.id) {
+          latest = t;
+          break;
+        }
+      }
+      if (latest != null && latest.status == DownloadStatus.failed) {
+        _updateTask(latest.copyWith(status: DownloadStatus.pending),
+            immediate: true);
+        unawaited(_processQueue());
+      }
+    });
+  }
+
+  /// O4: 调整任务优先级（数值越大越先调度）
+  Future<void> setPriority(String taskId, int priority) async {
+    final index = _tasks.indexWhere((t) => t.id == taskId);
+    if (index == -1) return;
+    _updateTask(_tasks[index].copyWith(priority: priority), immediate: true);
+    // 有并发余量时立即重新调度，让高优先级任务尽快开始
+    unawaited(_processQueue());
   }
 
   Future<void> pauseTask(String taskId) async {
@@ -715,7 +897,9 @@ class DownloadService {
     final task = _tasks.firstWhere((t) => t.id == taskId);
     if (task.status == DownloadStatus.paused ||
         task.status == DownloadStatus.failed) {
-      _updateTask(task.copyWith(status: DownloadStatus.pending),
+      // 手动重试时重置自动重试次数
+      _updateTask(
+          task.copyWith(status: DownloadStatus.pending, attemptCount: 0),
           immediate: true);
       unawaited(_processQueue());
     }
@@ -1512,4 +1696,496 @@ class DownloadService {
       _saveTasks();
     }
   }
+
+  // O9: 清理孤立的临时文件（.downloading 文件）
+  // 扫描下载目录，删除没有对应下载任务的临时文件
+  Future<void> _cleanupOrphanedTempFiles() async {
+    try {
+      _log.info('开始清理孤立的临时文件...', tag: 'Download');
+      
+      final downloadDir = await _getDownloadDirectory();
+      if (!await downloadDir.exists()) {
+        return;
+      }
+
+      int deletedCount = 0;
+      int deletedSize = 0;
+
+      // 递归扫描下载目录
+      await for (final entity in downloadDir.list(recursive: true)) {
+        if (entity is File && entity.path.endsWith('.downloading')) {
+          // 检查是否有对应的下载任务
+          final hasCorrespondingTask = _tasks.any((task) {
+            final workDir = Directory('${downloadDir.path}/${task.workId}');
+            final filePath = DownloadFilePathService.localPathForRelativePath(
+              rootPath: workDir.path,
+              relativePath: task.fileName,
+            );
+            return '${filePath}.downloading' == entity.path;
+          });
+
+          if (!hasCorrespondingTask) {
+            // 孤立的临时文件，删除它
+            try {
+              final fileSize = await entity.length();
+              await entity.delete();
+              deletedCount++;
+              deletedSize += fileSize;
+              _log.info('已删除孤立临时文件: ${entity.path} (${_formatBytes(fileSize)})', tag: 'Download');
+            } catch (e) {
+              _log.error('删除临时文件失败: ${entity.path}, 错误: $e', tag: 'Download');
+            }
+          }
+        }
+      }
+
+      if (deletedCount > 0) {
+        _log.info('临时文件清理完成：删除 $deletedCount 个文件，释放 ${_formatBytes(deletedSize)}', tag: 'Download');
+      } else {
+        _log.info('没有发现孤立的临时文件', tag: 'Download');
+      }
+    } catch (e) {
+      _log.error('清理临时文件失败: $e', tag: 'Download');
+    }
+  }
+
+  // 格式化字节大小（辅助方法）
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) {
+      return '$bytes B';
+    } else if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(2)} KB';
+    } else if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+    } else {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+    }
+  }
+
+  // O10: 清理所有下载文件
+  // 删除下载目录中的所有文件，但保留下载任务记录
+  Future<void> clearAllDownloads() async {
+    try {
+      _log.info('开始清理所有下载文件...', tag: 'Download');
+      
+      final downloadDir = await _getDownloadDirectory();
+      if (!await downloadDir.exists()) {
+        _log.info('下载目录不存在，无需清理', tag: 'Download');
+        return;
+      }
+
+      int deletedCount = 0;
+      int deletedSize = 0;
+
+      // 递归删除下载目录中的所有文件和子目录
+      await for (final entity in downloadDir.list(recursive: false)) {
+        try {
+          if (entity is File) {
+            final fileSize = await entity.length();
+            await entity.delete();
+            deletedCount++;
+            deletedSize += fileSize;
+          } else if (entity is Directory) {
+            // 递归删除作品目录
+            await for (final subEntity in entity.list(recursive: true)) {
+              if (subEntity is File) {
+                final fileSize = await subEntity.length();
+                deletedSize += fileSize;
+              }
+            }
+            await entity.delete(recursive: true);
+            deletedCount++;
+          }
+        } catch (e) {
+          _log.error('删除失败: ${entity.path}, 错误: $e', tag: 'Download');
+        }
+      }
+
+      // 将已完成的任务标记为失败（因为文件已被删除）
+      for (var i = 0; i < _tasks.length; i++) {
+        final task = _tasks[i];
+        if (task.status == DownloadStatus.completed) {
+          _tasks[i] = task.copyWith(
+            status: DownloadStatus.failed,
+            error: '文件已被清理',
+          );
+        }
+      }
+      _tasksController.add(List.from(_tasks));
+      await _saveTasks();
+
+      if (deletedCount > 0) {
+        _log.info('下载文件清理完成：删除 $deletedCount 个文件/目录，释放 ${_formatBytes(deletedSize)}', tag: 'Download');
+      } else {
+        _log.info('没有发现需要清理的下载文件', tag: 'Download');
+      }
+    } catch (e) {
+      _log.error('清理下载文件失败: $e', tag: 'Download');
+      rethrow;
+    }
+  }
+
+  // ==================== M1: 从原 kikoeru 迁移 ====================
+
+  /// 从原 kikoeru（com.zinhao.kikoeru）导入下载文件。
+  ///
+  /// 源目录通常是 /sdcard/KikoeruLib/libs_work/，其下子目录以纯数字 workId 命名。
+  /// 复制完成后调用 [reloadMetadataFromDisk] 自动补全 work_metadata.json 和任务记录，
+  /// 元数据缺失时由 [_upgradeOldWorkFolders] 走 API→本地兜底 三级补全（风险点1）。
+  Future<ImportResult> importFromLegacyKikoeru(
+    Directory sourceDir, {
+    bool moveInsteadOfCopy = false,
+    void Function(int done, int total, int bytesCopied)? onProgress,
+  }) async {
+    final result = ImportResult();
+    try {
+      debugPrint('[IMPORT] sourceDir=${sourceDir.path}');
+      // 风险点2：校验源目录，防止自引用
+      final validation = await _validateSourceDir(sourceDir);
+      if (!validation.ok) {
+        result.error = validation.reason;
+        _log.warning('导入校验失败: ${validation.reason}', tag: 'Download');
+        return result;
+      }
+
+      final downloadDir = await _getDownloadDirectory();
+      if (!await downloadDir.exists()) {
+        await downloadDir.create(recursive: true);
+      }
+
+      // 扫描源目录子目录
+      final subDirs = <Directory>[];
+      await for (final entity in sourceDir.list(followLinks: false)) {
+        if (entity is Directory) subDirs.add(entity);
+      }
+
+      result.total = subDirs.length;
+      _log.info('发现 ${subDirs.length} 个子目录待迁移', tag: 'Download');
+
+      int copiedBytes = 0;
+      for (final subDir in subDirs) {
+        try {
+          // 风险点5：三级识别 workId
+          final workId = await _identifyWorkId(subDir);
+          debugPrint('[IMPORT] subDir=${subDir.path} workId=$workId');
+          if (workId == null) {
+            result.skipped.add(ImportSkip(
+              path: subDir.path,
+              reason: '无法识别为作品目录',
+            ));
+            continue;
+          }
+
+          // 目标目录：KikoFlu 下载目录/<workId>
+          final targetDir =
+              Directory(p.join(downloadDir.path, workId.toString()));
+
+          // 若目标已存在，跳过避免覆盖（用户可先清理再导入）
+          if (await targetDir.exists()) {
+            result.skipped.add(ImportSkip(
+              path: subDir.path,
+              reason: '目标已存在 RJ$workId，跳过',
+            ));
+            continue;
+          }
+
+          await targetDir.create(recursive: true);
+
+          // 风险点3：流式复制，带进度回调
+          final bytes = await _copyWorkDirectory(
+            subDir,
+            targetDir,
+            onProgress: (b) {
+              copiedBytes += b;
+              onProgress?.call(result.done, result.total, copiedBytes);
+            },
+          );
+
+          result.success++;
+          result.totalBytes += bytes;
+          _log.info('已迁移 RJ$workId: ${_formatBytes(bytes)}', tag: 'Download');
+        } catch (e) {
+          result.failed
+              .add(ImportSkip(path: subDir.path, reason: e.toString()));
+          _log.error('迁移子目录失败: ${subDir.path}, $e', tag: 'Download');
+        } finally {
+          result.done++;
+          onProgress?.call(result.done, result.total, copiedBytes);
+        }
+      }
+
+      // 复制完成后，调用磁盘同步自动补全元数据和任务记录
+      _log.info('文件复制完成，开始同步元数据和任务...', tag: 'Download');
+      await reloadMetadataFromDisk();
+      _log.info(
+        '导入完成：成功 ${result.success}，跳过 ${result.skipped.length}，'
+        '失败 ${result.failed.length}，共 ${_formatBytes(result.totalBytes)}',
+        tag: 'Download',
+      );
+    } catch (e) {
+      result.error = e.toString();
+      _log.error('从原 kikoeru 导入失败: $e', tag: 'Download');
+    }
+    return result;
+  }
+
+  /// 风险点2：校验源目录，防止选到 KikoFlu 自身下载目录或其子目录。
+  Future<_DirValidation> _validateSourceDir(Directory sourceDir) async {
+    if (!await sourceDir.exists()) {
+      return _DirValidation.fail('源目录不存在');
+    }
+    final downloadDir = await _getDownloadDirectory();
+    try {
+      final srcReal = sourceDir.resolveSymbolicLinksSync();
+      final dstReal = downloadDir.resolveSymbolicLinksSync();
+      if (srcReal == dstReal) {
+        return _DirValidation.fail('源目录不能是 KikoFlu 当前的下载目录');
+      }
+      if (srcReal.startsWith('$dstReal${Platform.pathSeparator}')) {
+        return _DirValidation.fail('源目录不能位于 KikoFlu 下载目录之内');
+      }
+    } catch (_) {
+      // resolveSymbolicLinksSync 可能失败，忽略
+    }
+    return _DirValidation.ok();
+  }
+
+  /// 风险点5：三级识别 workId
+  /// 1. 目录名解析（纯数字 / RJxxxxxx）
+  /// 2. 目录内 .json 元数据文件的 source_id / workId / id 字段
+  /// 3. 目录内文件名匹配 RJxxxxxx
+  Future<int?> _identifyWorkId(Directory subDir) async {
+    // 一级：目录名解析
+    final fromName = LocalWorkMetadataService.parseWorkIdFromName(
+      p.basename(subDir.path),
+    );
+    if (fromName != null) return fromName;
+
+    // 二级：扫描目录内 .json 元数据文件
+    try {
+      await for (final entity in subDir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        final name = p.basename(entity.path).toLowerCase();
+        if (!name.endsWith('.json')) continue;
+        try {
+          final decoded = jsonDecode(await entity.readAsString());
+          if (decoded is Map) {
+            for (final key in ['source_id', 'workId', 'work_id', 'id']) {
+              final parsed = _metadataIdAsPositiveInt(decoded[key]);
+              if (parsed != null) return parsed;
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    // 三级：递归扫描文件名中的 RJxxxxxx
+    final rx = RegExp(r'RJ(\d{5,8})', caseSensitive: false);
+    try {
+      await for (final entity in subDir.list(recursive: true)) {
+        if (entity is! File) continue;
+        final m = rx.firstMatch(p.basename(entity.path));
+        if (m != null) {
+          final parsed = int.tryParse(m.group(1)!);
+          if (parsed != null && parsed > 0) return parsed;
+        }
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  /// 风险点3：流式复制作品目录，分块读写避免内存峰值。
+  Future<int> _copyWorkDirectory(
+    Directory source,
+    Directory target, {
+    void Function(int bytes)? onProgress,
+  }) async {
+    int totalBytes = 0;
+    try {
+      await for (final entity
+          in source.list(recursive: true, followLinks: false)) {
+        if (entity is! File) continue;
+        final rel = p.relative(entity.path, from: source.path);
+        final destPath = p.join(target.path, rel);
+        await Directory(p.dirname(destPath)).create(recursive: true);
+        final size = await _copyFileWithProgress(entity, File(destPath));
+        totalBytes += size;
+        onProgress?.call(size);
+      }
+    } catch (e) {
+      debugPrint('[IMPORT] _copyWorkDirectory error: $e (source=${source.path})');
+      rethrow;
+    }
+    debugPrint('[IMPORT] _copyWorkDirectory done: $totalBytes bytes, '
+        'source=${source.path} target=${target.path}');
+    return totalBytes;
+  }
+
+  Future<int> _copyFileWithProgress(File source, File dest) async {
+    // openRead() 默认按流分块读取，避免一次性读入大文件
+    final input = source.openRead();
+    final output = dest.openWrite();
+    int total = 0;
+    try {
+      await for (final chunk in input) {
+        output.add(chunk);
+        total += chunk.length;
+      }
+      await output.flush();
+      await output.close();
+    } catch (e) {
+      await output.close();
+      rethrow;
+    }
+    return total;
+  }
+
+  // ==================== M2: 目录级删除 ====================
+
+  /// 删除作品内指定目录（含子内容），并清理对应任务。
+  /// 删除前应由 UI 层调用确认对话框（风险点4）。
+  Future<void> deleteDirectory(int workId, String relativeDirPath) async {
+    try {
+      final workDir = await _findExistingWorkDirectory(workId);
+      if (workDir == null) {
+        _log.warning('删除目录失败：未找到作品目录 RJ$workId', tag: 'Download');
+        return;
+      }
+      final dirPath = DownloadFilePathService.localPathForRelativePath(
+        rootPath: workDir.path,
+        relativePath: relativeDirPath,
+      );
+      final dir = Directory(dirPath);
+      if (!await dir.exists()) {
+        _log.warning('目录不存在: $dirPath', tag: 'Download');
+        return;
+      }
+
+      // 收集受影响的任务（fileName 以该目录开头）
+      final normalizedDir =
+          DownloadFilePathService.normalizeRelativePath(relativeDirPath);
+      final affected = _tasks
+          .where((t) =>
+              t.workId == workId && t.fileName.startsWith('$normalizedDir/'))
+          .toList();
+
+      // 删除目录
+      await dir.delete(recursive: true);
+      _log.info('已删除目录: $normalizedDir (RJ$workId)', tag: 'Download');
+
+      // 移除对应任务
+      if (affected.isNotEmpty) {
+        final ids = affected.map((t) => t.id).toSet();
+        _tasks.removeWhere((t) => ids.contains(t.id));
+        _tasksController.add(List.from(_tasks));
+        await _saveTasks();
+      }
+
+      // 清理空父目录
+      await _cleanEmptyDirectories(dir.parent, workDir.path);
+
+      // 若作品目录只剩 metadata/cover，递归删除整个作品
+      final remaining = <FileSystemEntity>[];
+      await for (final e in workDir.list(followLinks: false)) {
+        remaining.add(e);
+      }
+      final onlyMeta = remaining.isNotEmpty &&
+          remaining.every((e) {
+            final name = p.basename(e.path);
+            return LocalWorkMetadataService.reservedFileNames.contains(name) ||
+                LocalWorkMetadataService.shouldSkipMetadataFile(name,
+                    isRoot: true);
+          });
+      if (onlyMeta) {
+        await workDir.delete(recursive: true);
+        _tasks.removeWhere((t) => t.workId == workId);
+        _tasksController.add(List.from(_tasks));
+        await _saveTasks();
+        _log.info('作品目录已清空，递归删除 RJ$workId', tag: 'Download');
+      }
+    } catch (e) {
+      _log.error('删除目录失败: $e', tag: 'Download');
+      rethrow;
+    }
+  }
+
+  // ==================== M3: 作品级批量操作 ====================
+
+  /// 继续该作品所有失败任务（resumeTask 已含断点续传逻辑 O8）。
+  Future<void> retryFailedByWork(int workId) async {
+    final failed = _tasks
+        .where((t) =>
+            t.workId == workId && t.status == DownloadStatus.failed)
+        .toList();
+    for (final task in failed) {
+      await resumeTask(task.id);
+    }
+    _log.info('已触发 RJ$workId 的 ${failed.length} 个失败任务重试',
+        tag: 'Download');
+  }
+
+  /// 暂停该作品所有进行中/等待中的任务。
+  Future<void> pauseAllByWork(int workId) async {
+    final active = _tasks
+        .where((t) =>
+            t.workId == workId &&
+            (t.status == DownloadStatus.downloading ||
+                t.status == DownloadStatus.pending))
+        .toList();
+    for (final task in active) {
+      await pauseTask(task.id);
+    }
+    _log.info('已暂停 RJ$workId 的 ${active.length} 个任务', tag: 'Download');
+  }
+
+  /// 清空该作品的已完成任务记录（不删磁盘文件）。
+  Future<void> clearCompletedByWork(int workId) async {
+    final before = _tasks.length;
+    _tasks.removeWhere((t) =>
+        t.workId == workId && t.status == DownloadStatus.completed);
+    final removed = before - _tasks.length;
+    _tasksController.add(List.from(_tasks));
+    await _saveTasks();
+    _log.info('已清空 RJ$workId 的 $removed 个已完成任务记录',
+        tag: 'Download');
+  }
+
+  /// 删除该作品全部任务及文件。
+  Future<void> deleteAllByWork(int workId) async {
+    final tasks = _tasks.where((t) => t.workId == workId).toList();
+    for (final task in tasks) {
+      await deleteTask(task.id);
+    }
+    _log.info('已删除 RJ$workId 的全部任务及文件', tag: 'Download');
+  }
+}
+
+/// 从原 kikoeru 导入的结果汇总。
+class ImportResult {
+  int success = 0;
+  int done = 0;
+  int total = 0;
+  int totalBytes = 0;
+  final List<ImportSkip> skipped = [];
+  final List<ImportSkip> failed = [];
+  String? error;
+
+  int get failedCount => failed.length;
+  int get skippedCount => skipped.length;
+}
+
+class ImportSkip {
+  final String path;
+  final String reason;
+  const ImportSkip({required this.path, required this.reason});
+}
+
+class _DirValidation {
+  final bool ok;
+  final String? reason;
+  const _DirValidation._(this.ok, this.reason);
+  factory _DirValidation.ok() => const _DirValidation._(true, null);
+  factory _DirValidation.fail(String reason) =>
+      _DirValidation._(false, reason);
 }

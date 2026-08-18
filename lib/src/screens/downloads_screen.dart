@@ -198,12 +198,164 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
               S.of(context).nFiles(workTasks.length),
               style: const TextStyle(fontSize: 12),
             ),
-            trailing: _isSelectionMode ? null : const Icon(Icons.expand_more),
+            trailing: _isSelectionMode
+                ? null
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildWorkActions(workId, workTasks),
+                      const Icon(Icons.expand_more),
+                    ],
+                  ),
             children: workTasks.map((task) => _buildTaskTile(task)).toList(),
           ),
         );
       },
     );
+  }
+
+  /// M3: 作品级（按 RJ 分组）批量操作菜单。
+  Widget _buildWorkActions(int workId, List<DownloadTask> workTasks) {
+    final failedCount = workTasks
+        .where((t) => t.status == DownloadStatus.failed)
+        .length;
+    final activeCount = workTasks
+        .where((t) =>
+            t.status == DownloadStatus.downloading ||
+            t.status == DownloadStatus.pending)
+        .length;
+    final completedCount = workTasks
+        .where((t) => t.status == DownloadStatus.completed)
+        .length;
+
+    return PopupMenuButton<String>(
+      icon: const Icon(Icons.more_vert),
+      tooltip: '作品操作',
+      onSelected: (value) {
+        switch (value) {
+          case 'retry_failed':
+            // M3-T2: 一键续传该 RJ 下所有失败任务（含断点续传）
+            DownloadService.instance.retryFailedByWork(workId);
+            break;
+          case 'pause_all':
+            DownloadService.instance.pauseAllByWork(workId);
+            break;
+          case 'clear_completed':
+            _confirmClearCompleted(workId, completedCount);
+            break;
+          case 'delete_all':
+            _confirmDeleteAllByWork(workId, workTasks);
+            break;
+        }
+      },
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: 'retry_failed',
+          enabled: failedCount > 0,
+          child: ListTile(
+            leading: const Icon(Icons.play_arrow),
+            title: const Text('继续全部失败'),
+            subtitle: Text('$failedCount 个失败任务'),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        ),
+        PopupMenuItem(
+          value: 'pause_all',
+          enabled: activeCount > 0,
+          child: ListTile(
+            leading: const Icon(Icons.pause),
+            title: const Text('暂停全部'),
+            subtitle: Text('$activeCount 个进行中'),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        ),
+        PopupMenuItem(
+          value: 'clear_completed',
+          enabled: completedCount > 0,
+          child: ListTile(
+            leading: const Icon(Icons.clear_all),
+            title: const Text('清空已完成记录'),
+            subtitle: Text('$completedCount 条记录（不删文件）'),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'delete_all',
+          child: ListTile(
+            leading: Icon(Icons.delete_forever, color: Colors.red),
+            title: Text('删除全部任务及文件'),
+            textColor: Colors.red,
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _confirmClearCompleted(int workId, int count) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('清空已完成记录'),
+        content: Text('将清除该作品 $count 条已完成任务记录，磁盘文件不会删除。确定继续吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(S.of(context).cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await DownloadService.instance.clearCompletedByWork(workId);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已清空该作品的已完成记录')),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmDeleteAllByWork(
+      int workId, List<DownloadTask> workTasks) async {
+    // 风险点4：统计文件数与大小，删除前二次确认
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(S.of(context).deletionConfirmTitle),
+        content: Text(
+          '将删除该作品全部 ${workTasks.length} 个任务及对应文件（不可恢复）。确定继续吗？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(S.of(context).cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: Text(S.of(context).delete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await DownloadService.instance.deleteAllByWork(workId);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已删除该作品全部任务及文件')),
+        );
+      }
+    }
   }
 
   Widget _buildTaskTile(DownloadTask task) {
@@ -288,6 +440,24 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
               icon: const Icon(Icons.play_arrow),
               onPressed: () => DownloadService.instance.resumeTask(task.id),
               tooltip: S.of(context).resume,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete),
+              onPressed: () => _confirmDelete(task),
+              tooltip: S.of(context).delete,
+            ),
+          ],
+        );
+      case DownloadStatus.pending:
+        // O4：提供优先级提升入口（数值越大越先调度）；删除操作保持
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_up),
+              onPressed: () => DownloadService.instance
+                  .setPriority(task.id, task.priority + 1),
+              tooltip: '提高优先级',
             ),
             IconButton(
               icon: const Icon(Icons.delete),

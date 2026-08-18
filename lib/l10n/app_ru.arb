@@ -571,6 +571,17 @@
   "confirmClearCacheMessage": "Вы уверены, что хотите очистить весь кэш? Это действие нельзя отменить.",
   "clearCacheFailedWithError": "Ошибка очистки кэша: {error}",
   "hasNewVersion": "Новая версия",
+  
+  "storageBreakdown": "Распределение хранилища",
+  "storageCache": "Кэш приложения",
+  "storageAudioCache": "Аудио кэш",
+  "storageImageCache": "Кэш изображений",
+  "storageDownloads": "Загруженные файлы",
+  "storageTotal": "Всего",
+  
+  "includeDownloads": "Включить загруженные файлы",
+  "includeDownloadsWarning": "Это удалит все загруженные файлы и сбросит задачи загрузки",
+  "cacheAndDownloadsCleared": "Кэш и загруженные файлы очищены",
 
   "themeMode": "Режим темы",
   "colorTheme": "Цветовая тема",

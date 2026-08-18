@@ -3054,6 +3054,60 @@ abstract class S {
   /// **'New version'**
   String get hasNewVersion;
 
+  /// No description provided for @storageBreakdown.
+  ///
+  /// In en, this message translates to:
+  /// **'Storage Breakdown'**
+  String get storageBreakdown;
+
+  /// No description provided for @storageCache.
+  ///
+  /// In en, this message translates to:
+  /// **'App Cache'**
+  String get storageCache;
+
+  /// No description provided for @storageAudioCache.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio Cache'**
+  String get storageAudioCache;
+
+  /// No description provided for @storageImageCache.
+  ///
+  /// In en, this message translates to:
+  /// **'Image Cache'**
+  String get storageImageCache;
+
+  /// No description provided for @storageDownloads.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloads'**
+  String get storageDownloads;
+
+  /// No description provided for @storageTotal.
+  ///
+  /// In en, this message translates to:
+  /// **'Total'**
+  String get storageTotal;
+
+  /// No description provided for @includeDownloads.
+  ///
+  /// In en, this message translates to:
+  /// **'Include downloaded files'**
+  String get includeDownloads;
+
+  /// No description provided for @includeDownloadsWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'This will delete all downloaded files and reset download tasks'**
+  String get includeDownloadsWarning;
+
+  /// No description provided for @cacheAndDownloadsCleared.
+  ///
+  /// In en, this message translates to:
+  /// **'Cache and downloads cleared'**
+  String get cacheAndDownloadsCleared;
+
   /// No description provided for @themeMode.
   ///
   /// In en, this message translates to:

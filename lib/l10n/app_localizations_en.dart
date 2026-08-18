@@ -1601,6 +1601,34 @@ class SEn extends S {
   String get hasNewVersion => 'New version';
 
   @override
+  String get storageBreakdown => 'Storage Breakdown';
+
+  @override
+  String get storageCache => 'App Cache';
+
+  @override
+  String get storageAudioCache => 'Audio Cache';
+
+  @override
+  String get storageImageCache => 'Image Cache';
+
+  @override
+  String get storageDownloads => 'Downloads';
+
+  @override
+  String get storageTotal => 'Total';
+
+  @override
+  String get includeDownloads => 'Include downloaded files';
+
+  @override
+  String get includeDownloadsWarning =>
+      'This will delete all downloaded files and reset download tasks';
+
+  @override
+  String get cacheAndDownloadsCleared => 'Cache and downloads cleared';
+
+  @override
   String get themeMode => 'Theme Mode';
 
   @override

@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:path/path.dart' as p;
 import '../../l10n/app_localizations.dart';
 import 'dart:io';
 
@@ -18,6 +21,8 @@ import '../providers/settings_provider.dart';
 import '../providers/update_provider.dart';
 import '../providers/floating_lyric_provider.dart';
 import '../services/cache_service.dart';
+import '../services/download_service.dart';
+import '../services/network_proxy_service.dart';
 import '../services/translation_service.dart';
 import '../utils/snackbar_util.dart';
 import '../widgets/scrollable_appbar.dart';
@@ -367,8 +372,84 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           subtitle: S.of(context).currentCache(_cacheSize),
           onTap: _showCacheManagementDialog,
         ),
+        SettingsListTile(
+          icon: Icons.download_for_offline_outlined,
+          title: '从原 kikoeru 导入',
+          subtitle: '将旧版 kikoeru 下载的音声迁移到 KikoFlu',
+          onTap: () => _importFromLegacyKikoeru(context),
+        ),
+        SettingsListTile(
+          icon: Icons.vpn_key,
+          title: '网络代理',
+          subtitle: NetworkProxyService.proxyConfig.isEmpty
+              ? '直连（服务器被墙时可配置，如 10.0.2.2:7897）'
+              : '当前: ${NetworkProxyService.proxyConfig}',
+          onTap: () => _configureNetworkProxy(context),
+        ),
       ],
     );
+  }
+
+  Future<void> _configureNetworkProxy(BuildContext context) async {
+    final controller =
+        TextEditingController(text: NetworkProxyService.proxyConfig);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('网络代理设置'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '服务器需要代理访问时配置，格式 host:port。'
+              'MuMu 模拟器访问宿主机代理填 10.0.2.2:7897，'
+              '真机填宿主机局域网 IP:7897。留空则直连。',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.text,
+              decoration: const InputDecoration(
+                hintText: '如 10.0.2.2:7897',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(S.of(ctx).cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+
+    controller.dispose();
+    if (result == null || !mounted) return;
+
+    final trimmed = result.trim();
+    if (trimmed.isNotEmpty && NetworkProxyService.parseProxy(trimmed) == null) {
+      _showSnackBar(const SnackBar(
+        content: Text('代理格式无效，应为 host:port'),
+        backgroundColor: Colors.red,
+      ));
+      return;
+    }
+
+    await NetworkProxyService.setProxyConfig(trimmed);
+    if (!mounted) return;
+    _showSnackBar(const SnackBar(
+      content: Text('代理已保存，重启应用后生效'),
+    ));
+    setState(() {});
   }
 
   void _showLanguagePicker(BuildContext context, WidgetRef ref) {
@@ -583,31 +664,174 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Future<void> _confirmAndClearCache(BuildContext dialogContext) async {
-    final l10n = S.of(dialogContext);
-    final confirmed = await showDialog<bool>(
-      context: dialogContext,
-      builder: (context) => AlertDialog(
-        title: Text(l10n.confirmClear),
-        content: Text(l10n.confirmClearCacheMessage),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(l10n.cancel),
+  Future<void> _importFromLegacyKikoeru(BuildContext context) async {
+    // Android 11+ Scoped Storage 下读取 /sdcard 任意目录需"所有文件访问"权限
+    if (Platform.isAndroid) {
+      var status = await Permission.manageExternalStorage.status;
+      if (!status.isGranted) {
+        status = await Permission.manageExternalStorage.request();
+      }
+      if (!status.isGranted) {
+        // Android 10 及以下回退到传统存储权限
+        final legacy = await Permission.storage.request();
+        if (!legacy.isGranted) {
+          if (!mounted) return;
+          _showSnackBar(const SnackBar(
+            content: Text('导入需要文件访问权限，请在系统设置中授予后重试'),
+            backgroundColor: Colors.red,
+          ));
+          return;
+        }
+      }
+    }
+
+    // 选择源目录（通常是 /sdcard/KikoeruLib/libs_work）
+    String? sourcePath;
+    try {
+      sourcePath = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: '选择原 kikoeru 下载目录（通常为 KikoeruLib/libs_work）',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackBar(SnackBar(content: Text('选择目录失败: $e')));
+      return;
+    }
+    if (sourcePath == null || !mounted) return;
+
+    final sourceDir = Directory(sourcePath);
+    final progressNotifier =
+        ValueNotifier<_ImportProgress>(const _ImportProgress());
+
+    // 显示进度对话框
+    if (!context.mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => ValueListenableBuilder<_ImportProgress>(
+        valueListenable: progressNotifier,
+        builder: (ctx, p, _) => AlertDialog(
+          title: const Text('正在导入'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LinearProgressIndicator(
+                value: p.total > 0 ? p.done / p.total : null,
+              ),
+              const SizedBox(height: 12),
+              if (p.total > 0)
+                Text('已迁移 ${p.done} / ${p.total} 个目录')
+              else
+                const Text('正在扫描目录...'),
+              const SizedBox(height: 4),
+              if (p.bytes > 0) Text('已复制 ${_formatImportBytes(p.bytes)}'),
+            ],
           ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            child: Text(l10n.confirmClear),
-          ),
-        ],
+        ),
       ),
     );
 
-    if (confirmed != true || !mounted || !dialogContext.mounted) return;
+    // 执行导入
+    final result = await DownloadService.instance.importFromLegacyKikoeru(
+      sourceDir,
+      onProgress: (done, total, bytes) {
+        progressNotifier.value = _ImportProgress(
+          done: done,
+          total: total,
+          bytes: bytes,
+        );
+      },
+    );
+
+    progressNotifier.dispose();
+    if (!context.mounted) return;
+    Navigator.of(context).pop();
+
+    final skipDetails = result.skipped
+        .take(2)
+        .map((s) => '${p.basename(s.path)}: ${s.reason}')
+        .join('\n');
+    final failDetails = result.failed
+        .take(2)
+        .map((s) => '${p.basename(s.path)}: ${s.reason}')
+        .join('\n');
+    final msg = result.error != null
+        ? '导入失败: ${result.error}'
+        : '导入完成：成功 ${result.success} 个，'
+            '跳过 ${result.skippedCount} 个，'
+            '失败 ${result.failedCount} 个'
+            '${skipDetails.isNotEmpty ? '\n跳过详情:\n$skipDetails' : ''}'
+            '${failDetails.isNotEmpty ? '\n失败详情:\n$failDetails' : ''}'
+            '\n源目录: $sourcePath';
+    if (!mounted) return;
+    _showSnackBar(SnackBar(
+      content: Text(msg),
+      duration: const Duration(seconds: 5),
+      backgroundColor: result.error != null ? Colors.red : Colors.green,
+    ));
+    await _updateCacheSize();
+  }
+
+  String _formatImportBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    int i = 0;
+    double size = bytes.toDouble();
+    while (size >= 1024 && i < units.length - 1) {
+      size /= 1024;
+      i++;
+    }
+    return '${size.toStringAsFixed(i == 0 ? 0 : 2)} ${units[i]}';
+  }
+
+  Future<void> _confirmAndClearCache(BuildContext dialogContext) async {
+    final l10n = S.of(dialogContext);
+    bool includeDownloads = false;
+    
+    final result = await showDialog<Map<String, bool>>(
+      context: dialogContext,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: Text(l10n.confirmClear),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(l10n.confirmClearCacheMessage),
+              const SizedBox(height: 16),
+              // O10: 添加"是否包含下载文件"选项
+              CheckboxListTile(
+                title: Text(l10n.includeDownloads),
+                subtitle: Text(l10n.includeDownloadsWarning),
+                value: includeDownloads,
+                onChanged: (value) {
+                  setState(() {
+                    includeDownloads = value ?? false;
+                  });
+                },
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: Text(l10n.cancel),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, {'confirmed': true, 'includeDownloads': includeDownloads}),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+              child: Text(l10n.confirmClear),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result == null || result['confirmed'] != true || !mounted || !dialogContext.mounted) return;
 
     final navigator = Navigator.of(dialogContext);
     showDialog(
@@ -620,15 +844,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
     try {
       await CacheService.clearAllCache();
+      
+      // O10: 如果用户选择包含下载文件，则清理下载目录
+      if (result['includeDownloads'] == true) {
+        await DownloadService.instance.clearAllDownloads();
+      }
+      
       if (!mounted || !dialogContext.mounted) return;
 
       navigator.pop(); // 关闭加载指示器
       navigator.pop(); // 关闭缓存管理对话框
       await _updateCacheSize();
 
+      final message = result['includeDownloads'] == true
+          ? l10n.cacheAndDownloadsCleared
+          : l10n.cacheCleared;
+
       _showSnackBar(
         SnackBar(
-          content: Text(l10n.cacheCleared),
+          content: Text(message),
           backgroundColor: Colors.green,
         ),
       );
@@ -666,6 +900,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final currentSize = await CacheService.getCacheSize();
     final formattedSize = _cacheSize; // 使用已缓存的格式化字符串
     int currentLimit = await CacheService.getCacheSizeLimit();
+
+    // O7: 获取分项存储数据
+    final audioCacheSize = await CacheService.getAudioCacheSize();
+    final imageCacheSize = await CacheService.getImageCacheSize();
+    final downloadSize = await CacheService.getDownloadSize();
+    final appCacheSize = currentSize - audioCacheSize - imageCacheSize;
 
     if (!mounted) return;
 
@@ -863,6 +1103,70 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                     ),
                                   ),
                                 ),
+                                const SizedBox(height: 16),
+                                // O7: 存储分项展示
+                                SettingsSectionCard(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .surfaceContainerHighest,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(16.0),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          S.of(context).storageBreakdown,
+                                          style: const TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 12),
+                                        _buildStorageBreakdownItem(
+                                          context,
+                                          icon: Icons.folder_outlined,
+                                          label: S.of(context).storageCache,
+                                          size: appCacheSize,
+                                          color: Colors.blue,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        _buildStorageBreakdownItem(
+                                          context,
+                                          icon: Icons.audiotrack_outlined,
+                                          label: S.of(context).storageAudioCache,
+                                          size: audioCacheSize,
+                                          color: Colors.purple,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        _buildStorageBreakdownItem(
+                                          context,
+                                          icon: Icons.image_outlined,
+                                          label: S.of(context).storageImageCache,
+                                          size: imageCacheSize,
+                                          color: Colors.orange,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        _buildStorageBreakdownItem(
+                                          context,
+                                          icon: Icons.download_outlined,
+                                          label: S.of(context).storageDownloads,
+                                          size: downloadSize,
+                                          color: Colors.green,
+                                        ),
+                                        const Divider(height: 24),
+                                        _buildStorageBreakdownItem(
+                                          context,
+                                          icon: Icons.storage_outlined,
+                                          label: S.of(context).storageTotal,
+                                          size: currentSize + downloadSize,
+                                          color: Theme.of(context).colorScheme.primary,
+                                          isTotal: true,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -1024,6 +1328,71 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ),
                         const SizedBox(height: 16),
 
+                        // O7: 存储分项展示（竖屏）
+                        SettingsSectionCard(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
+                          child: Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  S.of(context).storageBreakdown,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                                _buildStorageBreakdownItem(
+                                  context,
+                                  icon: Icons.folder_outlined,
+                                  label: S.of(context).storageCache,
+                                  size: appCacheSize,
+                                  color: Colors.blue,
+                                ),
+                                const SizedBox(height: 8),
+                                _buildStorageBreakdownItem(
+                                  context,
+                                  icon: Icons.audiotrack_outlined,
+                                  label: S.of(context).storageAudioCache,
+                                  size: audioCacheSize,
+                                  color: Colors.purple,
+                                ),
+                                const SizedBox(height: 8),
+                                _buildStorageBreakdownItem(
+                                  context,
+                                  icon: Icons.image_outlined,
+                                  label: S.of(context).storageImageCache,
+                                  size: imageCacheSize,
+                                  color: Colors.orange,
+                                ),
+                                const SizedBox(height: 8),
+                                _buildStorageBreakdownItem(
+                                  context,
+                                  icon: Icons.download_outlined,
+                                  label: S.of(context).storageDownloads,
+                                  size: downloadSize,
+                                  color: Colors.green,
+                                ),
+                                const Divider(height: 24),
+                                _buildStorageBreakdownItem(
+                                  context,
+                                  icon: Icons.storage_outlined,
+                                  label: S.of(context).storageTotal,
+                                  size: currentSize + downloadSize,
+                                  color: Theme.of(context).colorScheme.primary,
+                                  isTotal: true,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+
                         Text(
                           S.of(context).cacheSizeLimit,
                           style: const TextStyle(
@@ -1134,4 +1503,65 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       },
     );
   }
+
+  // O7: 构建存储分项展示项
+  Widget _buildStorageBreakdownItem(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required int size,
+    required Color color,
+    bool isTotal = false,
+  }) {
+    final formattedSize = _formatBytes(size);
+    return Row(
+      children: [
+        Icon(icon, size: 20, color: color),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: isTotal ? 14 : 13,
+              fontWeight: isTotal ? FontWeight.w600 : FontWeight.normal,
+            ),
+          ),
+        ),
+        Text(
+          formattedSize,
+          style: TextStyle(
+            fontSize: isTotal ? 14 : 13,
+            fontWeight: isTotal ? FontWeight.w600 : FontWeight.normal,
+            color: isTotal ? Theme.of(context).colorScheme.primary : null,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // 格式化字节大小
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) {
+      return '$bytes B';
+    } else if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(2)} KB';
+    } else if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+    } else {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+    }
+  }
+}
+
+/// 导入进度值类，用于驱动进度对话框刷新。
+class _ImportProgress {
+  final int done;
+  final int total;
+  final int bytes;
+
+  const _ImportProgress({
+    this.done = 0,
+    this.total = 0,
+    this.bytes = 0,
+  });
 }

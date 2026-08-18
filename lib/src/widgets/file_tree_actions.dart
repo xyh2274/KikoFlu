@@ -5,6 +5,7 @@ import '../utils/file_icon_utils.dart';
 import 'file_tree_view.dart';
 
 typedef FileTreeActionHandler = void Function(dynamic item, String parentPath);
+typedef FileTreeFolderDeleteHandler = void Function(String folderPath);
 
 class FileTreeActions extends StatelessWidget {
   const FileTreeActions({
@@ -17,9 +18,11 @@ class FileTreeActions extends StatelessWidget {
     this.onPreviewText,
     this.onPreviewPdf,
     this.onDelete,
+    this.onDeleteFolder,
     this.showPlaybackActions = true,
     this.showPreviewActions = true,
     this.showDeleteAction = false,
+    this.showFolderDeleteAction = false,
   });
 
   final FileTreeEntry entry;
@@ -30,13 +33,27 @@ class FileTreeActions extends StatelessWidget {
   final FileTreeActionHandler? onPreviewText;
   final FileTreeActionHandler? onPreviewPdf;
   final FileTreeActionHandler? onDelete;
+  final FileTreeFolderDeleteHandler? onDeleteFolder;
   final bool showPlaybackActions;
   final bool showPreviewActions;
   final bool showDeleteAction;
+  final bool showFolderDeleteAction;
 
   @override
   Widget build(BuildContext context) {
-    if (entry.isFolder) return const SizedBox.shrink();
+    // M2: 文件夹行支持目录级删除
+    if (entry.isFolder) {
+      if (showFolderDeleteAction && onDeleteFolder != null) {
+        return IconButton(
+          onPressed: () => onDeleteFolder?.call(entry.itemPath),
+          icon: const Icon(Icons.delete_outline),
+          color: Colors.red.shade400,
+          tooltip: S.of(context).delete,
+          iconSize: 20,
+        );
+      }
+      return const SizedBox.shrink();
+    }
 
     final item = entry.item;
 

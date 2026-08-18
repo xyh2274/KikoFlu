@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 
 import '../models/work.dart';
 import '../services/download_path_service.dart';
+import '../services/download_file_path_service.dart';
 import '../services/download_service.dart';
 import '../services/log_service.dart';
 import '../services/translation_service.dart';
@@ -607,8 +608,10 @@ class _OfflineFileExplorerWidgetState
       showPlaybackActions: false,
       showPreviewActions: false,
       showDeleteAction: true,
+      showFolderDeleteAction: true,
       onLoadSubtitle: (item, _) => _loadLyricManually(item),
       onDelete: (item, parentPath) => _deleteFile(item, parentPath),
+      onDeleteFolder: (folderPath) => _deleteFolder(folderPath),
     );
   }
 
@@ -745,6 +748,121 @@ class _OfflineFileExplorerWidgetState
 
       // 显示错误消息
       if (mounted) {
+        SnackBarUtil.showError(
+          context,
+          l10n.deleteFailedWithError(e.toString()),
+        );
+      }
+    }
+  }
+
+  // M2: 删除整个目录（含子内容），删除前预扫描文件数与大小二次确认（风险点4）
+  Future<void> _deleteFolder(String folderPath) async {
+    final l10n = S.of(context);
+    if (_workDirPath == null) return;
+
+    // 预扫描：统计文件数和总大小
+    int fileCount = 0;
+    int totalSize = 0;
+    try {
+      final dir = Directory(
+        DownloadFilePathService.localPathForRelativePath(
+          rootPath: _workDirPath!,
+          relativePath: folderPath,
+        ),
+      );
+      if (!await dir.exists()) {
+        if (!mounted) return;
+        SnackBarUtil.showError(context, l10n.deleteFailed);
+        return;
+      }
+      await for (final entity in dir.list(recursive: true)) {
+        if (entity is File) {
+          fileCount++;
+          try {
+            totalSize += await entity.length();
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      _log.captureOutput('[OfflineFileExplorer] 扫描目录失败: $e');
+    }
+
+    // 高风险目录（文件多或体积大）额外红色警告
+    final isHighRisk = fileCount > 10 || totalSize > 100 * 1024 * 1024;
+
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.deletionConfirmTitle),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('确定删除目录 "$folderPath" 吗？'),
+            const SizedBox(height: 8),
+            Text(
+              '包含 $fileCount 个文件，共 ${FileSizeResolver.formatBytes(totalSize)}',
+              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+            ),
+            if (isHighRisk) ...[
+              const SizedBox(height: 8),
+              Text(
+                '该目录较大，删除后不可恢复，请谨慎操作。',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.red.shade400,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: Text(l10n.delete),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      if (mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => const Center(
+            child: CircularProgressIndicator(),
+          ),
+        );
+      }
+
+      await DownloadService.instance.deleteDirectory(
+        widget.work.id,
+        folderPath,
+      );
+
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+
+      await _loadLocalFiles();
+
+      if (mounted) {
+        SnackBarUtil.showSuccess(context, '已删除目录 "$folderPath"');
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
         SnackBarUtil.showError(
           context,
           l10n.deleteFailedWithError(e.toString()),

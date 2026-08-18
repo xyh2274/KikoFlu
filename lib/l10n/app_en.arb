@@ -734,6 +734,17 @@
   "clearCacheFailedWithError": "Clear cache failed: {error}",
   "@clearCacheFailedWithError": { "placeholders": { "error": { "type": "String" } } },
   "hasNewVersion": "New version",
+  
+  "storageBreakdown": "Storage Breakdown",
+  "storageCache": "App Cache",
+  "storageAudioCache": "Audio Cache",
+  "storageImageCache": "Image Cache",
+  "storageDownloads": "Downloads",
+  "storageTotal": "Total",
+  
+  "includeDownloads": "Include downloaded files",
+  "includeDownloadsWarning": "This will delete all downloaded files and reset download tasks",
+  "cacheAndDownloadsCleared": "Cache and downloads cleared",
 
   "themeMode": "Theme Mode",
   "colorTheme": "Color Theme",

@@ -1566,6 +1566,33 @@ class SZh extends S {
   String get hasNewVersion => '有新版本';
 
   @override
+  String get storageBreakdown => '存储分项';
+
+  @override
+  String get storageCache => '应用缓存';
+
+  @override
+  String get storageAudioCache => '音频缓存';
+
+  @override
+  String get storageImageCache => '图片缓存';
+
+  @override
+  String get storageDownloads => '下载文件';
+
+  @override
+  String get storageTotal => '总计';
+
+  @override
+  String get includeDownloads => '包含下载文件';
+
+  @override
+  String get includeDownloadsWarning => '这将删除所有已下载的文件并重置下载任务';
+
+  @override
+  String get cacheAndDownloadsCleared => '缓存和下载文件已清除';
+
+  @override
   String get themeMode => '主题模式';
 
   @override

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/auth_provider.dart';
 import '../services/kikoeru_api_service.dart';
+import '../services/network_proxy_service.dart';
 import '../utils/server_utils.dart';
 import '../utils/snackbar_util.dart';
 import '../../l10n/app_localizations.dart';
@@ -341,6 +342,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           sendTimeout: const Duration(seconds: 5),
         ),
       );
+      // 若配置了网络代理（如宿主机 Clash 7897），应用到测试连接
+      NetworkProxyService.applyProxy(dio);
 
       final trimmedHost = host.trim();
       String baseUrl;
@@ -463,6 +466,63 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     return '${message.substring(0, maxLength)}...';
   }
 
+  // 配置网络代理（服务器被墙时走宿主机代理，如 10.0.2.2:7897）
+  Future<void> _configureNetworkProxy() async {
+    final controller =
+        TextEditingController(text: NetworkProxyService.proxyConfig);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('网络代理设置'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '服务器需要代理访问时配置，格式 host:port。'
+              'MuMu 模拟器访问宿主机代理填 10.0.2.2:7897，'
+              '真机填宿主机局域网 IP:7897。留空则直连。',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.text,
+              decoration: const InputDecoration(
+                hintText: '如 10.0.2.2:7897',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(S.of(ctx).cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+
+    controller.dispose();
+    if (result == null || !mounted) return;
+
+    final trimmed = result.trim();
+    if (trimmed.isNotEmpty && NetworkProxyService.parseProxy(trimmed) == null) {
+      SnackBarUtil.showError(context, '代理格式无效，应为 host:port');
+      return;
+    }
+
+    await NetworkProxyService.setProxyConfig(trimmed);
+    if (!mounted) return;
+    SnackBarUtil.showSuccess(context, '代理已保存，点「测试连接」验证');
+  }
+
   @override
   Widget build(BuildContext context) {
     final isLandscape =
@@ -478,6 +538,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         centerTitle: true,
         // Show back button in adding account mode
         automaticallyImplyLeading: widget.isAddingAccount,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.vpn_key),
+            tooltip: '网络代理',
+            onPressed: _configureNetworkProxy,
+          ),
+        ],
       ),
       body: SafeArea(
         child: isLandscape ? _buildLandscapeLayout() : _buildPortraitLayout(),
