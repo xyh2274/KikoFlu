@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../utils/file_icon_utils.dart';
+import '../utils/file_tree_utils.dart';
 import '../utils/string_utils.dart';
 import 'download_file_path_service.dart';
 
@@ -239,7 +240,10 @@ class LocalWorkMetadataService {
       entities.add(entity);
     }
     entities.sort(
-      (a, b) => p.basename(a.path).compareTo(p.basename(b.path)),
+      (a, b) => FileTreeUtils.naturalCompare(
+        p.basename(a.path),
+        p.basename(b.path),
+      ),
     );
 
     final children = <dynamic>[];

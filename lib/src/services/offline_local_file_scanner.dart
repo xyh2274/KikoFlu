@@ -46,6 +46,9 @@ class OfflineLocalFileScanner {
       knownRelativePaths: knownRelativePaths,
     );
 
+    // 按标题自然排序（01, 02, ... 010, 011），与在线文件列表顺序保持一致
+    FileTreeUtils.sortNatural(files);
+
     return OfflineLocalFileScanResult(
       files: files,
       fileExists: existingFiles,
@@ -188,7 +191,10 @@ class OfflineLocalFileScanner {
       entities.add(entity);
     }
     entities.sort(
-      (a, b) => p.basename(a.path).compareTo(p.basename(b.path)),
+      (a, b) => FileTreeUtils.naturalCompare(
+        p.basename(a.path),
+        p.basename(b.path),
+      ),
     );
 
     for (final entity in entities) {

@@ -391,4 +391,40 @@ class FileTreeUtils {
     collect(items);
     return names;
   }
+
+  /// 对文件树每层按标题做自然排序（01, 02, ... 010, 011），
+  /// 使本地文件列表与在线服务端的文件顺序保持一致。
+  static void sortNatural(List<dynamic> items) {
+    items.sort((a, b) => naturalCompare(titleOf(a), titleOf(b)));
+    for (final item in items) {
+      if (isFolder(item)) {
+        final children = childrenOf(item);
+        if (children != null) sortNatural(children);
+      }
+    }
+  }
+
+  /// 自然排序比较：数字段按数值比较（01 < 02 < 010 < 011），
+  /// 其余部分按字典序（大小写不敏感）。
+  static int naturalCompare(String a, String b) {
+    final pattern = RegExp(r'(\d+|\D+)');
+    final partsA = pattern.allMatches(a).map((m) => m.group(0)!).toList();
+    final partsB = pattern.allMatches(b).map((m) => m.group(0)!).toList();
+    final len = partsA.length < partsB.length ? partsA.length : partsB.length;
+    for (var i = 0; i < len; i++) {
+      final pa = partsA[i];
+      final pb = partsB[i];
+      final na = int.tryParse(pa);
+      final nb = int.tryParse(pb);
+      if (na != null && nb != null) {
+        if (na != nb) return na.compareTo(nb);
+        // 数值相同（如前导零 01 vs 1），按原始字符串长度区分
+        if (pa.length != pb.length) return pa.length.compareTo(pb.length);
+      } else {
+        final cmp = pa.toLowerCase().compareTo(pb.toLowerCase());
+        if (cmp != 0) return cmp;
+      }
+    }
+    return partsA.length.compareTo(partsB.length);
+  }
 }
