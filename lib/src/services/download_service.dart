@@ -2038,9 +2038,22 @@ class DownloadService {
       int deletedCount = 0;
       int deletedSize = 0;
 
-      // 递归扫描下载目录
-      await for (final entity in downloadDir.list(recursive: true)) {
-        if (entity is File && entity.path.endsWith('.downloading')) {
+      // 递归扫描下载目录（限制深度与总量，防止超大/异常目录占用主 isolate 过久）
+      const maxDepth = 6;
+      const maxScanned = 50000;
+      var scanned = 0;
+
+      Future<void> scanDirectory(Directory dir, int depth) async {
+        if (depth > maxDepth || scanned >= maxScanned) return;
+        await for (final entity in dir.list(followLinks: false)) {
+          if (scanned++ >= maxScanned) return;
+          if (entity is Directory) {
+            await scanDirectory(entity, depth + 1);
+            continue;
+          }
+          if (entity is! File || !entity.path.endsWith('.downloading')) {
+            continue;
+          }
           // 检查是否有对应的下载任务
           final hasCorrespondingTask = _tasks.any((task) {
             final workDir = Directory('${downloadDir.path}/${task.workId}');
@@ -2065,6 +2078,8 @@ class DownloadService {
           }
         }
       }
+
+      await scanDirectory(downloadDir, 0);
 
       if (deletedCount > 0) {
         _log.info('临时文件清理完成：删除 $deletedCount 个文件，释放 ${_formatBytes(deletedSize)}', tag: 'Download');
@@ -2241,9 +2256,10 @@ class DownloadService {
         }
       }
 
-      // 复制完成后，调用磁盘同步自动补全元数据和任务记录
-      _log.info('文件复制完成，开始同步元数据和任务...', tag: 'Download');
-      await reloadMetadataFromDisk();
+      // 复制完成后不再执行全量磁盘同步（reloadMetadataFromDisk 会遍历所有作品
+      // 并逐个做在线补全，主 isolate 被持续占用会卡住导入界面）。
+      // 新导入的作品由"已下载"页 getDiskWorks 直接展示，
+      // 元数据由 ensureLocalMetadataCompleteness 在启动/进入页面时后台补全。
       _log.info(
         '导入完成：成功 ${result.success}，跳过 ${result.skipped.length}，'
         '失败 ${result.failed.length}，共 ${_formatBytes(result.totalBytes)}',
