@@ -181,6 +181,9 @@ class TranslationService {
       sourcesToTry.add(source);
     }
 
+    // 首个质量不佳（如罗马音化）的结果兜底保留，全部引擎都差时返回它
+    String? qualityFallback;
+
     for (final source in sourcesToTry) {
       try {
         String result;
@@ -209,6 +212,15 @@ class TranslationService {
           result = translation.text;
         }
 
+        // 质量检测：目标为中文但结果疑似罗马音（Google 走 ja→en→zh 中转的产物），
+        // 视为翻译失败并继续尝试下一个引擎
+        if (isRomanizedResult(text, result, targetLocale)) {
+          _log.captureOutput(
+              'Translation output looks romanized with $source, retrying next engine: $result');
+          qualityFallback ??= result;
+          continue;
+        }
+
         // 如果成功且不是首选源，提示用户
         if (source != selectedSource) {
           _showFallbackNotification(source);
@@ -224,7 +236,27 @@ class TranslationService {
       }
     }
 
-    return text; // 所有尝试都失败，返回原文
+    // 所有引擎都失败或输出质量不佳时，返回保留的第一个结果（如有）
+    return qualityFallback ?? text;
+  }
+
+  /// 检测翻译结果是否疑似罗马音化（日文原文被转写成拉丁字母而非翻译成中文）。
+  /// Google 翻译对部分日文标题会走 ja→en→zh 中转，专有名词先变成罗马音，
+  /// 再从英文回译中文时无法还原，导致结果中夹杂大量拉丁字母。
+  static bool isRomanizedResult(
+      String sourceText, String result, Locale targetLocale) {
+    // 仅目标语言为中文时检测
+    if (targetLocale.languageCode != 'zh') return false;
+    // 原文需含日文假名，确保源语言为日文
+    if (!RegExp(r'[\u3040-\u30ff]').hasMatch(sourceText)) return false;
+    // 结果需包含拉丁字母（罗马音标志）
+    final latinCount = RegExp(r'[a-zA-Z]').allMatches(result).length;
+    if (latinCount == 0) return false;
+    // 去除空白后统计总字符数（含中文/假名），按占比判断是否罗马音化
+    final total = result.replaceAll(RegExp(r'\s'), '').length;
+    if (total == 0) return false;
+    // 拉丁字母占比超过 30% 视为罗马音化
+    return latinCount / total > 0.3;
   }
 
   void _showFallbackNotification(String sourceName) {

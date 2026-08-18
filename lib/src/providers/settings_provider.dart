@@ -113,7 +113,8 @@ enum TranslationTargetLanguage {
   static TranslationTargetLanguage fromValue(String? value) {
     return TranslationTargetLanguage.values.firstWhere(
       (language) => language.value == value,
-      orElse: () => TranslationTargetLanguage.followApp,
+      // 默认目标语言为简体中文：无论系统/应用语言如何，翻译统一输出简体中文
+      orElse: () => TranslationTargetLanguage.zhHans,
     );
   }
 
@@ -137,7 +138,8 @@ class TranslationLanguagePreferences {
   final String customTargetLanguage;
 
   const TranslationLanguagePreferences({
-    this.targetLanguage = TranslationTargetLanguage.followApp,
+    // 默认目标语言为简体中文，避免跟随系统语言导致翻译成其他语言
+    this.targetLanguage = TranslationTargetLanguage.zhHans,
     this.customTargetLanguage = '',
   });
 
