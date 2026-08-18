@@ -1766,6 +1766,8 @@ class DownloadService {
   /// 对磁盘上无有效 work_metadata.json 的作品先生成本地基础元数据；
   /// 对缺关键字段（标题为纯 RJ 号、无标签等）的作品从在线 API 合并补全；
   /// 对无有效封面的作品下载 cover.jpg。
+  /// 已补全的作品（work_metadata.json 含 metadataComplete: true）直接跳过，
+  /// 不重复在线请求与封面检查。
   /// 供"已下载"页进入时触发：先展示回退元数据，补全完成后通知任务列表刷新。
   Future<void> ensureLocalMetadataCompleteness() async {
     if (_metadataUpgradeInProgress) return;
@@ -1792,12 +1794,20 @@ class DownloadService {
       );
 
       var upgradedCount = 0;
+      var skippedCount = 0;
       for (final entry in works.entries) {
         final workId = entry.key;
         final workDir = entry.value;
         try {
-          // 1) 无有效元数据文件时，先生成本地基础元数据并写盘
+          // 0) 已写入补全完成标记的作品直接跳过：
+          //    不重复读盘完整性判断、不发在线请求、不重复检查封面，节省时间与资源
           var metadata = await _loadWorkMetadata(workId);
+          if (metadata != null && metadata['metadataComplete'] == true) {
+            skippedCount++;
+            continue;
+          }
+
+          // 1) 无有效元数据文件时，先生成本地基础元数据并写盘
           if (metadata == null) {
             final imported =
                 await _localMetadataService.loadImportedMetadata(
@@ -1823,6 +1833,27 @@ class DownloadService {
 
           // 3) 本地无有效封面时下载封面
           await _ensureWorkCover(workId, workDir, metadata);
+
+          // 4) 元数据完整且封面就绪后写入补全完成标记，
+          //    下次 ensureLocalMetadataCompleteness 直接跳过该作品。
+          //    补全失败（在线 API 不可用/封面缺失）时不写标记，留待下次重试。
+          metadata = await _loadWorkMetadata(workId) ?? metadata;
+          final coverPath = metadata['localCoverPath'] as String?;
+          final coverReady = coverPath != null &&
+              coverPath.trim().isNotEmpty &&
+              await File(
+                DownloadFilePathService.localPathForRelativePath(
+                  rootPath: workDir.path,
+                  relativePath: coverPath,
+                ),
+              ).exists();
+          if (!needsOnlineMetadataScrape(metadata) && coverReady) {
+            await _saveWorkMetadata(
+              workId,
+              {...metadata, 'metadataComplete': true},
+              null,
+            );
+          }
           upgradedCount++;
         } catch (e) {
           _log.warning('补全作品元数据失败 RJ$workId: $e', tag: 'Download');
@@ -1831,10 +1862,16 @@ class DownloadService {
 
       // 补全完成后，刷新已完成任务的元数据缓存（磁盘可能已更新标题/封面/标签），
       // 否则 UI 仍显示旧的任务缓存（如纯 RJ 号标题）。
+      // 只刷新磁盘上存在的作品，且同一作品只读盘一次，
+      // 避免对大量历史任务逐个读盘造成无谓耗时与日志刷屏。
+      final diskWorkIds = works.keys.toSet();
+      final refreshedIds = <int>{};
       var refreshedCount = 0;
       for (var i = 0; i < _tasks.length; i++) {
         final task = _tasks[i];
         if (task.status != DownloadStatus.completed) continue;
+        if (!diskWorkIds.contains(task.workId)) continue;
+        if (!refreshedIds.add(task.workId)) continue;
         final metadata = await _loadWorkMetadata(task.workId);
         if (metadata != null) {
           _tasks[i] = task.copyWith(workMetadata: metadata);
@@ -1846,7 +1883,7 @@ class DownloadService {
       _tasksController.add(List.from(_tasks));
       await _saveTasks();
       _log.info(
-        '作品元数据后台补全完成，处理 $upgradedCount 个作品，刷新任务缓存 $refreshedCount 条',
+        '作品元数据后台补全完成，处理 $upgradedCount 个作品，跳过已补全 $skippedCount 个，刷新任务缓存 $refreshedCount 条',
         tag: 'Download',
       );
     } catch (e) {
