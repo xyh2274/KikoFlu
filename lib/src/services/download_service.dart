@@ -37,6 +37,14 @@ class DownloadService {
   final LocalWorkMetadataService _localMetadataService =
       const LocalWorkMetadataService();
 
+  // 作品目录索引：workId -> 下载目录下的作品目录。
+  // 惰性构建（首次 _loadWorkMetadata 时遍历一次下载目录第一层），
+  // 避免 _findExistingWorkDirectory 每次调用都全目录遍历造成 O(n²)。
+  // 目录结构可能变化时（导入完成/删除作品/重载磁盘）通过
+  // [_invalidateWorkDirectoryIndex] 失效，或由全目录遍历点
+  // [_updateWorkDirectoryIndex] 直接刷新。
+  Map<int, Directory>? _workDirectoryIndex;
+
   // 并发下载控制
   static const int _maxConcurrentDownloads = 20;
   // O1 空间检查的安全余量（预留，避免可用空间恰好等于所需时仍失败）
@@ -330,37 +338,50 @@ class DownloadService {
     return null;
   }
 
-  Future<Directory?> _findExistingWorkDirectory(int workId) async {
+  /// 惰性构建 workId -> 作品目录 索引：仅首次调用时遍历一次下载目录第一层，
+  /// 之后 O(1) 命中。目录结构变化（导入/删除/重载）时由调用方通过
+  /// [_invalidateWorkDirectoryIndex] 失效重建，或由全目录遍历点
+  /// [_updateWorkDirectoryIndex] 直接复用遍历结果刷新。
+  /// 同一 workId 存在多个目录时，精确匹配（目录名 == workId）优先，
+  /// 与旧实现 [_findExistingWorkDirectory] 的选择语义保持一致。
+  Future<Map<int, Directory>> _getWorkDirectoryIndex() async {
+    final cached = _workDirectoryIndex;
+    if (cached != null) return cached;
     final downloadDir = await _getDownloadDirectory();
-    if (!await downloadDir.exists()) {
-      _log.warning('下载根目录不存在: ${downloadDir.path}', tag: 'Download');
-      return null;
-    }
-
-    Directory? fallback;
-    await for (final entity in downloadDir.list(followLinks: false)) {
-      if (entity is! Directory) continue;
-
-      final parsed = _localMetadataService.parseWorkFolder(entity);
-      if (parsed?.id != workId) continue;
-
-      if (p.basename(entity.path) == workId.toString()) {
-        _log.debug(
-          '匹配作品目录: workId=$workId, dir=${entity.path}, exact=true',
-          tag: 'Download',
-        );
-        return entity;
+    final index = <int, Directory>{};
+    if (await downloadDir.exists()) {
+      await for (final entity in downloadDir.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        final parsed = _localMetadataService.parseWorkFolder(entity);
+        if (parsed == null) continue;
+        final existing = index[parsed.id];
+        if (existing == null ||
+            p.basename(entity.path) == parsed.id.toString()) {
+          index[parsed.id] = entity;
+        }
       }
-      fallback ??= entity;
     }
+    _workDirectoryIndex = index;
+    return index;
+  }
 
-    if (fallback != null) {
-      _log.debug(
-        '匹配作品目录: workId=$workId, dir=${fallback.path}, exact=false',
-        tag: 'Download',
-      );
-    }
-    return fallback;
+  /// 用一次已有的下载目录第一层遍历结果刷新索引，避免重复遍历。
+  /// 调用方必须提供完整（未截断）的作品目录集合。
+  void _updateWorkDirectoryIndex(Map<int, Directory> works) {
+    if (works.isEmpty) return;
+    final current = _workDirectoryIndex ?? <int, Directory>{};
+    current.addAll(works);
+    _workDirectoryIndex = current;
+  }
+
+  /// 目录结构可能变化时失效索引（导入完成/删除作品/重载磁盘后调用）。
+  void _invalidateWorkDirectoryIndex() {
+    _workDirectoryIndex = null;
+  }
+
+  Future<Directory?> _findExistingWorkDirectory(int workId) async {
+    final index = await _getWorkDirectoryIndex();
+    return index[workId];
   }
 
   int? _metadataIdAsPositiveInt(dynamic value) {
@@ -970,6 +991,8 @@ class DownloadService {
         if (await dir.exists()) {
           await dir.delete(recursive: true);
           _log.info('已删除作品文件夹: $workDir', tag: 'Download');
+          // 目录结构已变化，失效作品目录索引
+          _invalidateWorkDirectoryIndex();
         }
       } catch (e) {
         _log.error('删除作品文件夹失败: $e', tag: 'Download');
@@ -1029,6 +1052,8 @@ class DownloadService {
         if (!hasOtherFiles) {
           await workDirObj.delete(recursive: true);
           _log.info('作品文件夹已空，已删除: $workDir', tag: 'Download');
+          // 目录结构已变化，失效作品目录索引
+          _invalidateWorkDirectoryIndex();
           // 删除所有相关任务
           _tasks.removeWhere((t) => t.workId == workId);
         }
@@ -1128,7 +1153,10 @@ class DownloadService {
     });
   }
 
-  // 升级旧版本的作品文件夹（尝试从 API 获取元数据）
+  // 为无有效 work_metadata.json 的作品生成本地基础元数据并写盘。
+  // 注意：不发起在线 API 请求、不下载封面、不移动文件 —— 在线补全统一由
+  // ensureLocalMetadataCompleteness 在后台执行。手动重载（reloadMetadataFromDisk）
+  // 只做磁盘文件树/任务同步，避免主 isolate 被逐个在线请求和文件重排拖死。
   Future<void> _upgradeOldWorkFolders(Map<int, Directory> workFolders) async {
     for (final entry in workFolders.entries) {
       final workId = entry.key;
@@ -1140,166 +1168,29 @@ class DownloadService {
         continue; // 已有有效元数据，跳过
       }
 
-      _log.info('发现本地作品文件夹，尝试补全元数据: RJ$workId', tag: 'Download');
+      _log.info('发现本地作品文件夹，生成本地基础元数据: RJ$workId', tag: 'Download');
 
       try {
-        // 创建 API 服务实例尝试获取元数据
-        final apiService = KikoeruApiService();
-
-        // 获取作品详情
-        final workData = await apiService.getWork(workId);
-
-        // 获取文件树
-        final tracks = await apiService.getWorkTracks(workId);
-
-        // 将 tracks 转换为 children 格式并添加到 workData
-        workData['children'] = tracks;
-
-        // 保存元数据（使用相对路径）
-        workData[LocalWorkMetadataService.localWorkDirNameKey] =
-            p.basename(workDir.path);
-        workData['localCoverPath'] = 'cover.jpg';
-        await metadataFile.writeAsString(jsonEncode(workData));
-        _log.info('已保存作品元数据: RJ$workId', tag: 'Download');
-
-        // 下载封面（使用高清封面 URL）
-        final host = StorageService.getString('server_host') ?? '';
-        final token = StorageService.getString('auth_token') ?? '';
-
-        if (host.isNotEmpty) {
-          String normalizedHost = host;
-          if (!host.startsWith('http://') && !host.startsWith('https://')) {
-            normalizedHost = 'https://$host';
-          }
-
-          final coverUrl = token.isNotEmpty
-              ? '$normalizedHost/api/cover/$workId?token=$token'
-              : '$normalizedHost/api/cover/$workId';
-
-          await _downloadCoverImage(workId, coverUrl,
-              workDirPath: workDir.path);
-          _log.info('已下载作品封面: RJ$workId', tag: 'Download');
-        }
-
-        // 尝试组织文件树结构
-        await _organizeFilesIntoTree(workId, workDir, tracks);
-
-        _log.info('作品升级成功: RJ$workId', tag: 'Download');
-      } catch (e) {
-        _log.warning(
-          '在线补全作品元数据失败，改用本地基础元数据 RJ$workId: $e',
+        final importedMetadata =
+            await _localMetadataService.loadImportedMetadata(
+          workDir: workDir,
+          workId: workId,
+        );
+        final fallbackMetadata =
+            await _localMetadataService.buildFallbackMetadata(
+          workId: workId,
+          workDir: workDir,
+          directoryName: p.basename(workDir.path),
+          existingMetadata: importedMetadata,
+        );
+        await metadataFile.writeAsString(jsonEncode(fallbackMetadata));
+        _log.info('已生成本地作品基础元数据: RJ$workId', tag: 'Download');
+      } catch (fallbackError) {
+        _log.error(
+          '生成本地作品基础元数据失败 RJ$workId: $fallbackError',
           tag: 'Download',
         );
-        try {
-          final importedMetadata =
-              await _localMetadataService.loadImportedMetadata(
-            workDir: workDir,
-            workId: workId,
-          );
-          final fallbackMetadata =
-              await _localMetadataService.buildFallbackMetadata(
-            workId: workId,
-            workDir: workDir,
-            directoryName: p.basename(workDir.path),
-            existingMetadata: importedMetadata,
-          );
-          await metadataFile.writeAsString(jsonEncode(fallbackMetadata));
-          _log.info('已生成本地作品基础元数据: RJ$workId', tag: 'Download');
-        } catch (fallbackError) {
-          _log.error(
-            '生成本地作品基础元数据失败 RJ$workId: $fallbackError',
-            tag: 'Download',
-          );
-        }
       }
-    }
-  }
-
-  // 将扁平的文件结构组织成树形结构
-  Future<void> _organizeFilesIntoTree(
-      int workId, Directory workDir, List<dynamic> tracks) async {
-    try {
-      // 构建文件树映射：hash -> 相对路径
-      final Map<String, String> hashToPath = {};
-
-      void buildPathMap(List<dynamic> items, String parentPath) {
-        for (final item in items) {
-          final type = item['type'] as String?;
-          final title =
-              item['title'] as String? ?? item['name'] as String? ?? '';
-          final hash = item['hash'] as String?;
-
-          if (type == 'folder') {
-            // 文件夹，递归处理子项
-            final folderPath =
-                parentPath.isEmpty ? title : '$parentPath/$title';
-            final children = item['children'] as List<dynamic>?;
-            if (children != null) {
-              buildPathMap(children, folderPath);
-            }
-          } else if (hash != null) {
-            // 文件，记录路径映射
-            final filePath = parentPath.isEmpty ? title : '$parentPath/$title';
-            hashToPath[hash] = filePath;
-          }
-        }
-      }
-
-      buildPathMap(tracks, '');
-
-      // 扫描工作目录中的所有文件
-      await for (final entity in workDir.list()) {
-        if (entity is File) {
-          final fileName = entity.path.split(Platform.pathSeparator).last;
-
-          // 跳过元数据和封面文件
-          if (fileName == 'work_metadata.json' || fileName == 'cover.jpg') {
-            continue;
-          }
-
-          // 尝试从文件树中找到对应的路径
-          String? targetPath;
-          for (final entry in hashToPath.entries) {
-            final expectedFileName = entry.value.split('/').last;
-            if (expectedFileName == fileName) {
-              targetPath = entry.value;
-              break;
-            }
-          }
-
-          // 如果找到了对应路径且包含目录，则移动文件
-          if (targetPath != null && targetPath.contains('/')) {
-            final targetFile = File(
-              DownloadFilePathService.localPathForRelativePath(
-                rootPath: workDir.path,
-                relativePath: DownloadFilePathService.safeRelativePath(
-                  targetPath,
-                ),
-              ),
-            );
-
-            // 创建目标目录
-            await targetFile.parent.create(recursive: true);
-
-            // 移动文件
-            try {
-              await entity.rename(targetFile.path);
-              _log.info('文件已重新组织: $fileName -> $targetPath', tag: 'Download');
-            } catch (e) {
-              // 如果 rename 失败（跨文件系统），尝试复制后删除
-              await entity.copy(targetFile.path);
-              await entity.delete();
-              _log.info('文件已复制并重新组织: $fileName -> $targetPath',
-                  tag: 'Download');
-            }
-          }
-        }
-      }
-
-      _log.info('文件树结构组织完成: RJ$workId', tag: 'Download');
-    } catch (e) {
-      _log.error('组织文件树失败 RJ$workId: $e', tag: 'Download');
-      // 失败不影响继续运行
     }
   }
 
@@ -1517,6 +1408,10 @@ class DownloadService {
     try {
       _log.info('开始从硬盘同步任务...', tag: 'Download');
 
+      // 重载期间目录结构可能变化（新导入/手动增删），失效目录索引，
+      // 后续由本次全目录遍历结果重建。
+      _invalidateWorkDirectoryIndex();
+
       // 获取下载目录
       final downloadDir = await _getDownloadDirectory();
       if (!await downloadDir.exists()) {
@@ -1544,6 +1439,24 @@ class DownloadService {
 
       _log.info(
         '发现 ${workFolders.length} 个作品文件夹，忽略 $ignoredDirectoryCount 个目录',
+        tag: 'Download',
+      );
+
+      // 用本次全目录遍历结果刷新作品目录索引（后续 _loadWorkMetadata
+      // 不再重复遍历下载目录，避免 O(n²)）。
+      _updateWorkDirectoryIndex(workFolders);
+
+      // 收集已有有效元数据文件（有数据）的作品：重载自动跳过这些，
+      // 只对没有数据的作品做文件树同步与任务重建，避免每次重载都全量扫描。
+      final hasMetadataWorkIds = <int>{};
+      for (final entry in workFolders.entries) {
+        if (await _isUsableMetadataFile(_workMetadataFile(entry.value))) {
+          hasMetadataWorkIds.add(entry.key);
+        }
+      }
+      _log.info(
+        '重载跳过已有数据的作品 ${hasMetadataWorkIds.length} 个，'
+        '需处理 ${workFolders.length - hasMetadataWorkIds.length} 个',
         tag: 'Download',
       );
 
@@ -1581,8 +1494,10 @@ class DownloadService {
       // 第二步：检查并升级旧版本文件（没有元数据的文件）
       await _upgradeOldWorkFolders(workFolders);
 
-      // 第三步：同步磁盘文件到文件树（确保手动添加的文件能正确显示）
+      // 第三步：同步磁盘文件到文件树（确保手动添加的文件能正确显示）。
+      // 已有有效元数据文件（有数据）的作品自动跳过，不重复全目录扫描。
       for (final entry in workFolders.entries) {
+        if (hasMetadataWorkIds.contains(entry.key)) continue;
         try {
           await _syncFileTreeWithDisk(entry.key, entry.value);
         } catch (e) {
@@ -1597,6 +1512,8 @@ class DownloadService {
         for (final t in _tasks) '${t.workId}:${t.fileName}': t,
       };
       for (final entry in workFolders.entries) {
+        // 已有有效元数据文件（有数据）的作品跳过任务扫描（任务已在之前建好）
+        if (hasMetadataWorkIds.contains(entry.key)) continue;
         final workId = entry.key;
         final workDir = entry.value;
 
@@ -1681,20 +1598,23 @@ class DownloadService {
         _log.info('添加了 ${newTasks.length} 个新任务', tag: 'Download');
       }
 
-      // 第五步：为所有已完成任务更新元数据（包含新同步的文件树）
+      // 第五步：为所有已完成任务更新元数据（包含新同步的文件树）。
+      // 同一作品多个任务只读盘一次（_loadWorkMetadata 按 workId 去重），
+      // 避免对大量历史任务逐条读盘造成 O(n²) 耗时。
+      final refreshedWorkIds = <int>{};
       for (var i = 0; i < _tasks.length; i++) {
         final task = _tasks[i];
-        if (task.status == DownloadStatus.completed) {
-          final metadata = await _loadWorkMetadata(task.workId);
-          if (metadata != null) {
-            _tasks[i] = task.copyWith(workMetadata: metadata);
-          } else {
-            _log.warning(
-              '完成任务仍缺少元数据: workId=${task.workId}, task=${task.id}, '
-              'file=${task.fileName}',
-              tag: 'Download',
-            );
-          }
+        if (task.status != DownloadStatus.completed) continue;
+        if (!refreshedWorkIds.add(task.workId)) continue;
+        final metadata = await _loadWorkMetadata(task.workId);
+        if (metadata != null) {
+          _tasks[i] = task.copyWith(workMetadata: metadata);
+        } else {
+          _log.warning(
+            '完成任务仍缺少元数据: workId=${task.workId}, task=${task.id}, '
+            'file=${task.fileName}',
+            tag: 'Download',
+          );
         }
       }
 
@@ -1702,8 +1622,11 @@ class DownloadService {
       _tasksController.add(List.from(_tasks));
       await _saveTasks();
 
-      _log.info('同步完成：删除 ${tasksToRemove.length} 个，新增 ${newTasks.length} 个',
-          tag: 'Download');
+      _log.info(
+        '同步完成：删除 ${tasksToRemove.length} 个，新增 ${newTasks.length} 个，'
+        '跳过已有数据 ${hasMetadataWorkIds.length} 个',
+        tag: 'Download',
+      );
     } catch (e) {
       _log.error('从硬盘同步任务失败: $e', tag: 'Download');
       rethrow;
@@ -1739,6 +1662,18 @@ class DownloadService {
             workDir: entity,
             directoryName: p.basename(entity.path),
           );
+          // 立即落盘：后续 ensureLocalMetadataCompleteness 开头的
+          // _loadWorkMetadata 能直接命中，避免同一作品重复构建文件树
+          // （buildFileTree + detectCover 两次全目录扫描）。
+          try {
+            await _workMetadataFile(entity)
+                .writeAsString(jsonEncode(fallback), flush: true);
+          } catch (e) {
+            _log.error(
+              '保存基础元数据失败 RJ${parsed.id}: $e',
+              tag: 'Download',
+            );
+          }
           result[parsed.id] = fallback;
         }
       }
@@ -1788,6 +1723,9 @@ class DownloadService {
       }
       if (works.isEmpty) return;
 
+      // 用本次完整遍历结果刷新作品目录索引
+      _updateWorkDirectoryIndex(works);
+
       _log.info(
         '开始后台补全 ${works.length} 个作品元数据',
         tag: 'Download',
@@ -1795,17 +1733,29 @@ class DownloadService {
 
       var upgradedCount = 0;
       var skippedCount = 0;
+      // 单次调度最多处理的作品数：大库 + 大量未标记作品时避免一次补全循环
+      // 长时间占用主 isolate（网络等待/文件树构建交织），
+      // 剩余作品留待下次启动/进入页面时继续。
+      const maxWorksPerRun = 50;
+      var processedCount = 0;
       for (final entry in works.entries) {
         final workId = entry.key;
         final workDir = entry.value;
         try {
           // 0) 已写入补全完成标记的作品直接跳过：
           //    不重复读盘完整性判断、不发在线请求、不重复检查封面，节省时间与资源
+          //    （跳过的不计入 maxWorksPerRun 配额，避免大库中靠后的未标记
+          //      作品永远排不到）。
           var metadata = await _loadWorkMetadata(workId);
           if (metadata != null && metadata['metadataComplete'] == true) {
             skippedCount++;
             continue;
           }
+
+          // 单次调度最多实际处理 maxWorksPerRun 个未完成作品，
+          // 避免一次补全循环长时间占用主 isolate，剩余留待下次触发继续。
+          if (processedCount >= maxWorksPerRun) break;
+          processedCount++;
 
           // 1) 无有效元数据文件时，先生成本地基础元数据并写盘
           if (metadata == null) {
@@ -1883,7 +1833,8 @@ class DownloadService {
       _tasksController.add(List.from(_tasks));
       await _saveTasks();
       _log.info(
-        '作品元数据后台补全完成，处理 $upgradedCount 个作品，跳过已补全 $skippedCount 个，刷新任务缓存 $refreshedCount 条',
+        '作品元数据后台补全完成，处理 $upgradedCount 个作品，跳过已补全 $skippedCount 个，'
+        '刷新任务缓存 $refreshedCount 条，剩余 ${works.length - processedCount} 个待下次',
         tag: 'Download',
       );
     } catch (e) {
@@ -2297,6 +2248,8 @@ class DownloadService {
       // 并逐个做在线补全，主 isolate 被持续占用会卡住导入界面）。
       // 新导入的作品由"已下载"页 getDiskWorks 直接展示，
       // 元数据由 ensureLocalMetadataCompleteness 在启动/进入页面时后台补全。
+      // 新目录已写入下载目录，失效作品目录索引以便下次重建。
+      _invalidateWorkDirectoryIndex();
       _log.info(
         '导入完成：成功 ${result.success}，跳过 ${result.skipped.length}，'
         '失败 ${result.failed.length}，共 ${_formatBytes(result.totalBytes)}',

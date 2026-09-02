@@ -113,11 +113,18 @@ class LocalWorkMetadataService {
         'https://www.dlsite.com/maniax/work/=/product_id/${formatRJCode(workId)}.html';
     metadata[localWorkDirNameKey] = directoryName;
 
-    metadata['children'] = await buildFileTree(workDir);
+    // 构建文件树时顺带收集封面候选，封面检测复用同一次目录遍历结果，
+    // 避免 detectCoverRelativePath 再单独递归全目录扫描一遍（大作品尤为明显）。
+    final coverCandidates = <CoverCandidate>[];
+    metadata['children'] = await buildFileTree(
+      workDir,
+      coverCandidates: coverCandidates,
+    );
 
     final localCoverPath = await detectCoverRelativePath(
       workDir,
       metadata['localCoverPath'],
+      coverCandidates,
     );
     if (localCoverPath != null) {
       metadata['localCoverPath'] = localCoverPath;
@@ -148,7 +155,10 @@ class LocalWorkMetadataService {
     return null;
   }
 
-  Future<List<dynamic>> buildFileTree(Directory workDir) {
+  Future<List<dynamic>> buildFileTree(
+    Directory workDir, {
+    List<CoverCandidate>? coverCandidates,
+  }) {
     // 预算：限制单次文件树构建的累计节点数，
     // 防止异常嵌套目录（导入递归复制等）组合爆炸拖垮主 isolate
     final budget = _TreeBuildBudget(20000);
@@ -156,12 +166,14 @@ class LocalWorkMetadataService {
       directory: workDir,
       parentRelativePath: '',
       budget: budget,
+      coverCandidates: coverCandidates,
     );
   }
 
   Future<String?> detectCoverRelativePath(
     Directory workDir, [
     dynamic existingCoverPath,
+    List<CoverCandidate>? preCollectedCandidates,
   ]) async {
     if (existingCoverPath is String && existingCoverPath.trim().isNotEmpty) {
       final normalized =
@@ -175,12 +187,17 @@ class LocalWorkMetadataService {
       }
     }
 
-    final candidates = <_CoverCandidate>[];
-    await _collectCoverCandidates(
-      directory: workDir,
-      parentRelativePath: '',
-      candidates: candidates,
-    );
+    // 复用调用方在构建文件树时顺带收集的封面候选（单遍目录遍历），
+    // 未提供时才单独递归扫描。
+    final candidates =
+        preCollectedCandidates ?? <CoverCandidate>[];
+    if (preCollectedCandidates == null) {
+      await _collectCoverCandidates(
+        directory: workDir,
+        parentRelativePath: '',
+        candidates: candidates,
+      );
+    }
 
     if (candidates.isEmpty) return null;
     candidates.sort((a, b) {
@@ -198,7 +215,7 @@ class LocalWorkMetadataService {
   Future<void> _collectCoverCandidates({
     required Directory directory,
     required String parentRelativePath,
-    required List<_CoverCandidate> candidates,
+    required List<CoverCandidate> candidates,
     int depth = 0,
   }) async {
     // 防御：目录嵌套过深（异常/递归目录）时停止展开
@@ -232,7 +249,7 @@ class LocalWorkMetadataService {
       final priority = _coverBaseNames.indexOf(baseName);
       if (priority == -1) continue;
 
-      candidates.add(_CoverCandidate(
+      candidates.add(CoverCandidate(
         relativePath: relativePath,
         priority: priority,
         depth: parentRelativePath.isEmpty
@@ -247,6 +264,7 @@ class LocalWorkMetadataService {
     required String parentRelativePath,
     int depth = 0,
     required _TreeBuildBudget budget,
+    List<CoverCandidate>? coverCandidates,
   }) async {
     // 防御：目录嵌套过深（异常/递归目录）或累计节点数超预算时停止展开
     if (depth > 64 || budget.exhausted) return const [];
@@ -273,6 +291,27 @@ class LocalWorkMetadataService {
       final normalizedRelativePath =
           DownloadFilePathService.normalizeRelativePath(relativePath);
 
+      // 顺带收集封面候选（调用方传入时）：与文件树构建共用同一次目录遍历，
+      // 避免 detectCoverRelativePath 再单独递归全目录扫描一遍。
+      // 放在 _shouldSkipEntity 之前，确保根目录 cover 文件（会被跳过树节点）
+      // 也能被捕获。
+      if (coverCandidates != null && entity is File) {
+        final extension = p.extension(title).toLowerCase();
+        if (_coverExtensions.contains(extension)) {
+          final baseName = p.basenameWithoutExtension(title).toLowerCase();
+          final priority = _coverBaseNames.indexOf(baseName);
+          if (priority != -1) {
+            coverCandidates.add(CoverCandidate(
+              relativePath: normalizedRelativePath,
+              priority: priority,
+              depth: parentRelativePath.isEmpty
+                  ? 0
+                  : parentRelativePath.split('/').length,
+            ));
+          }
+        }
+      }
+
       if (_shouldSkipEntity(title, normalizedRelativePath)) continue;
 
       if (entity is Directory) {
@@ -281,6 +320,7 @@ class LocalWorkMetadataService {
           parentRelativePath: normalizedRelativePath,
           depth: depth + 1,
           budget: budget,
+          coverCandidates: coverCandidates,
         );
         if (nested.isEmpty) continue;
         budget.consume();
@@ -527,8 +567,8 @@ class LocalWorkMetadataService {
   }
 }
 
-class _CoverCandidate {
-  const _CoverCandidate({
+class CoverCandidate {
+  const CoverCandidate({
     required this.relativePath,
     required this.priority,
     required this.depth,

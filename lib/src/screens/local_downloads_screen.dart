@@ -252,20 +252,10 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       await DownloadService.instance.reloadMetadataFromDisk();
       await _loadDiskWorks();
 
-      // 在线刮削：本地元数据不完整的作品联网补全（需已配置服务器）
-      var scrapedCount = 0;
-      final authState = ref.read(authProvider);
-      if ((authState.host ?? '').isNotEmpty) {
-        for (final workId in _diskWorks.keys.toList()) {
-          final meta = _diskWorks[workId];
-          if (meta == null) continue;
-          if (!DownloadService.needsOnlineMetadataScrape(meta)) continue;
-          if (await DownloadService.instance.scrapeWorkMetadata(workId)) {
-            scrapedCount++;
-          }
-        }
-        if (scrapedCount > 0) await _loadDiskWorks();
-      }
+      // 在线刮削统一由 DownloadService.ensureLocalMetadataCompleteness
+      // 在后台补全（_loadDiskWorks 已触发该流程），此处不再逐个阻塞刮削，
+      // 避免服务器响应慢时 UI 长时间无响应、主 isolate 被网络等待占用。
+      const scrapedCount = 0;
 
       // 清除加载提示并显示成功消息
       if (!mounted) return;
