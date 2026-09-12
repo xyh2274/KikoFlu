@@ -12,6 +12,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path/path.dart' as p;
+import 'package:real_liquid_glass/real_liquid_glass.dart';
 import 'dart:ffi' as ffi;
 import 'package:ffi/ffi.dart';
 import 'package:sqlite3/open.dart' as sqlite3_open;
@@ -21,6 +22,7 @@ import 'src/screens/main_screen.dart';
 import 'src/widgets/desktop_floating_lyric.dart';
 import 'src/utils/theme.dart';
 import 'src/services/storage_service.dart';
+import 'src/services/proxy_config.dart';
 import 'src/services/account_database.dart';
 import 'src/services/cache_service.dart';
 import 'src/services/download_service.dart';
@@ -29,6 +31,7 @@ import 'src/services/floating_lyric_service.dart';
 import 'src/services/log_service.dart';
 import 'src/services/audio_player_service.dart';
 import 'src/services/playback_history_service.dart';
+import 'src/services/platform_appearance_service.dart';
 import 'src/models/work.dart';
 import 'l10n/app_localizations.dart';
 import 'src/providers/audio_provider.dart';
@@ -36,6 +39,7 @@ import 'src/providers/auth_provider.dart';
 import 'src/providers/locale_provider.dart';
 import 'src/providers/theme_provider.dart';
 import 'src/providers/update_provider.dart';
+import 'src/utils/desktop_window_options.dart';
 import 'src/utils/global_keys.dart';
 import 'src/utils/system_ui_style.dart';
 import 'src/widgets/screen_awake_observer.dart';
@@ -115,6 +119,40 @@ Future<void> _configureMpv() async {
   try {
     final prefs = await SharedPreferences.getInstance();
     final passthrough = prefs.getBool('audio_passthrough_enabled') ?? false;
+    final httpProxyUrl = ProxyConfig.httpProxyUrl;
+    final httpsProxyUrl = ProxyConfig.httpsProxyUrl;
+    final hasProxy = httpProxyUrl != null || httpsProxyUrl != null;
+
+    // media_kit/mpv is a native network stack and does not inherit Dart's
+    // HttpOverrides. Export the configured HTTP proxy before libmpv is
+    // initialized so direct URL playback uses the same route as API/Dio.
+    if (hasProxy) {
+      if (httpProxyUrl != null) {
+        _setEnv('http_proxy', httpProxyUrl);
+        _setEnv('HTTP_PROXY', httpProxyUrl);
+      }
+      if (httpsProxyUrl != null) {
+        _setEnv('https_proxy', httpsProxyUrl);
+        _setEnv('HTTPS_PROXY', httpsProxyUrl);
+      }
+      // Keep loopback, private IPv4, and local IPv6 endpoints on the direct
+      // path, matching ProxyConfig.findProxyFor().
+      const noProxy =
+          'localhost,127.*,10.*,169.254.*,192.168.*,172.16.*,172.17.*,'
+          '172.18.*,172.19.*,172.20.*,172.21.*,172.22.*,172.23.*,'
+          '172.24.*,172.25.*,172.26.*,172.27.*,172.28.*,172.29.*,'
+          '172.30.*,172.31.*,::1,fc00::*,fd*,fe80::*';
+      _setEnv('no_proxy', noProxy);
+      _setEnv('NO_PROXY', noProxy);
+      LogService.instance.captureOutput(
+        '[Audio] Native proxy configured: http=$httpProxyUrl https=$httpsProxyUrl',
+      );
+    } else {
+      // A direct-mode session must also bypass proxy variables inherited from
+      // the shell or an older launcher environment.
+      _setEnv('no_proxy', '*');
+      _setEnv('NO_PROXY', '*');
+    }
 
     Directory configDir;
     if (Platform.isWindows) {
@@ -145,6 +183,7 @@ Future<void> _configureMpv() async {
 ao=wasapi
 audio-exclusive=yes
 audio-spdif=ac3,dts,eac3
+volume-max=400
 log-file=mpv_debug.log
 msg-level=all=v
 video=no
@@ -153,6 +192,7 @@ sub-auto=no
       } else if (Platform.isLinux) {
         configContent = '''
 audio-spdif=ac3,dts,eac3
+volume-max=400
 log-file=${p.join(configDir.path, 'mpv_debug.log')}
 msg-level=all=v
 video=no
@@ -163,6 +203,7 @@ sub-auto=no
 ao=coreaudio
 audio-exclusive=yes
 audio-spdif=ac3,dts,eac3
+volume-max=400
 log-file=${p.join(configDir.path, 'mpv_debug.log')}
 msg-level=all=v
 video=no
@@ -179,6 +220,7 @@ sub-auto=no
       String configContent;
       if (Platform.isWindows) {
         configContent = '''
+volume-max=400
 log-file=mpv_debug.log
 msg-level=all=v
 video=no
@@ -186,6 +228,7 @@ sub-auto=no
 ''';
       } else {
         configContent = '''
+volume-max=400
 log-file=${p.join(configDir.path, 'mpv_debug.log')}
 msg-level=all=v
 video=no
@@ -203,6 +246,14 @@ sub-auto=no
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  if (Platform.isAndroid) {
+    await enableEdgeToEdgeSystemUi();
+  }
+
+  // 初始化代理配置，并让所有 HttpClient（API/下载/音频流）走代理
+  await ProxyConfig.init();
+  HttpOverrides.global = KikoFluHttpOverrides();
 
   // 初始化日志系统，拦截 print/debugPrint 输出
   setupLogCapture();
@@ -231,13 +282,11 @@ void main(List<String> args) async {
     return;
   }
 
-  // Initialize just_audio_media_kit for desktop and Android platforms
-  if (Platform.isWindows ||
-      Platform.isLinux ||
-      Platform.isMacOS ||
-      Platform.isAndroid) {
+  // Use media_kit only for desktop platforms. Android is natively supported
+  // by just_audio and should stay on its Media3/AudioTrack backend.
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     await _configureMpv();
-    JustAudioMediaKit.ensureInitialized(android: true);
+    JustAudioMediaKit.ensureInitialized();
   }
 
   if (Platform.isWindows || Platform.isLinux) {
@@ -249,13 +298,8 @@ void main(List<String> args) async {
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     await windowManager.ensureInitialized();
 
-    WindowOptions windowOptions = const WindowOptions(
-      size: Size(1280, 720),
-      minimumSize: Size(350, 600),
-      center: true,
-      backgroundColor: Colors.transparent,
-      skipTaskbar: false,
-      titleBarStyle: TitleBarStyle.normal,
+    final windowOptions = createDesktopWindowOptions(
+      isWindows: Platform.isWindows,
     );
 
     windowManager.waitUntilReadyToShow(windowOptions, () async {
@@ -286,8 +330,10 @@ void main(List<String> args) async {
   // 初始化下载服�?
   await DownloadService.instance.initialize();
 
-  // Set system UI overlay style
-  SystemChrome.setSystemUIOverlayStyle(transparentSystemBarsStyle);
+  // Android applies this together with edge-to-edge before initialization.
+  if (!Platform.isAndroid) {
+    SystemChrome.setSystemUIOverlayStyle(transparentSystemBarsStyle);
+  }
 
   // 允许横竖屏旋�?
   SystemChrome.setPreferredOrientations([
@@ -296,6 +342,14 @@ void main(List<String> args) async {
     DeviceOrientation.landscapeLeft,
     DeviceOrientation.landscapeRight,
   ]);
+
+  if (Platform.isMacOS) {
+    await PlatformAppearanceService.instance.initialize();
+  }
+
+  // Resolve the real native-material capability before providers choose the
+  // first-run navigation style. Older Apple OSes stay on the classic default.
+  await LiquidGlass.capabilities();
 
   runZonedGuarded(
     () => runApp(const ProviderScope(child: KikoeruApp())),
@@ -320,10 +374,16 @@ class KikoeruApp extends ConsumerStatefulWidget {
 
 class _KikoeruAppState extends ConsumerState<KikoeruApp>
     with WindowListener, WidgetsBindingObserver {
+  final _appearanceService = PlatformAppearanceService.instance;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (Platform.isMacOS) {
+      _appearanceService.addListener(_handleAppearanceChanged);
+      unawaited(_initializeMacOSAppearance());
+    }
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       windowManager.addListener(this);
     }
@@ -335,6 +395,17 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
       // Silent update check on startup
       _checkForUpdates();
     });
+  }
+
+  Future<void> _initializeMacOSAppearance() async {
+    await _appearanceService.initialize();
+    await _appearanceService.setMode(
+      ref.read(themeSettingsProvider).toThemeMode(),
+    );
+  }
+
+  void _handleAppearanceChanged() {
+    if (mounted) setState(() {});
   }
 
   void _initPlaybackHistoryService() {
@@ -354,6 +425,9 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (Platform.isMacOS) {
+      _appearanceService.removeListener(_handleAppearanceChanged);
+    }
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       windowManager.removeListener(this);
     }
@@ -373,6 +447,7 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
         state == AppLifecycleState.detached) {
       PlaybackHistoryService.instance
           .flushNow(reason: FlushReason.appBackground);
+      AudioPlayerService.instance.persistPlaybackPosition();
     }
   }
 
@@ -380,6 +455,7 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
   void onWindowClose() async {
     // 桌面端关闭窗口时 flush 播放历史
     await PlaybackHistoryService.instance.flushNow(reason: FlushReason.dispose);
+    await AudioPlayerService.instance.persistPlaybackPosition();
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       // 关闭主窗口时，同时关闭悬浮字幕窗口
       await FloatingLyricService.instance.hide();
@@ -409,7 +485,23 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
   @override
   Widget build(BuildContext context) {
     final themeSettings = ref.watch(themeSettingsProvider);
+    if (Platform.isMacOS) {
+      ref.listen<AppThemeMode>(
+        themeSettingsProvider.select((settings) => settings.themeMode),
+        (previous, next) {
+          unawaited(
+            _appearanceService.setMode(switch (next) {
+              AppThemeMode.system => ThemeMode.system,
+              AppThemeMode.light => ThemeMode.light,
+              AppThemeMode.dark => ThemeMode.dark,
+            }),
+          );
+        },
+      );
+    }
     final locale = ref.watch(localeProvider);
+    final effectiveLocale =
+        locale ?? WidgetsBinding.instance.platformDispatcher.locale;
 
     return DynamicColorBuilder(
       builder: (ColorScheme? lightDynamic, ColorScheme? darkDynamic) {
@@ -424,11 +516,17 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
                 : null;
 
         // 根据用户设置决定主题模式
-        final ThemeMode mode = switch (themeSettings.themeMode) {
+        final requestedMode = switch (themeSettings.themeMode) {
           AppThemeMode.system => ThemeMode.system,
           AppThemeMode.light => ThemeMode.light,
           AppThemeMode.dark => ThemeMode.dark,
         };
+        final mode = Platform.isMacOS
+            ? PlatformAppearanceService.resolveMacOSThemeMode(
+                requestedMode,
+                _appearanceService.effectiveBrightness,
+              )
+            : requestedMode;
 
         return MaterialApp(
           scaffoldMessengerKey: rootScaffoldMessengerKey,
@@ -437,10 +535,16 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
           localizationsDelegates: S.localizationsDelegates,
           supportedLocales: S.supportedLocales,
           locale: locale,
-          theme:
-              AppTheme.lightTheme(lightScheme, themeSettings.colorSchemeType),
-          darkTheme:
-              AppTheme.darkTheme(darkScheme, themeSettings.colorSchemeType),
+          theme: AppTheme.lightTheme(
+            lightScheme,
+            themeSettings.colorSchemeType,
+            effectiveLocale,
+          ),
+          darkTheme: AppTheme.darkTheme(
+            darkScheme,
+            themeSettings.colorSchemeType,
+            effectiveLocale,
+          ),
           themeMode: mode,
           home: ScreenAwakeObserver(child: _buildHomeScreen()),
         );

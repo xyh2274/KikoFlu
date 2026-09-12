@@ -1,14 +1,134 @@
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:real_liquid_glass/real_liquid_glass.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/audio_gain_settings.dart';
+import '../models/audio_tap_playlist_mode.dart';
+import '../models/llm_api_protocol.dart';
 import '../models/sort_options.dart';
+import '../utils/persistent_enum_preference.dart';
 
 /// Triggers when Settings screen should refresh cache-related information.
 final settingsCacheRefreshTriggerProvider = StateProvider<int>((ref) => 0);
 
 /// Triggers when Subtitle Library screen should refresh (e.g., after path change).
 final subtitleLibraryRefreshTriggerProvider = StateProvider<int>((ref) => 0);
+
+/// Controls the optional liquid-glass treatment for the main navigation and
+/// the mini player. Only Apple OS versions with native Liquid Glass support
+/// enable it by default; fallback remains available as an explicit choice.
+class LiquidGlassNavigationNotifier extends StateNotifier<bool> {
+  static const String preferenceKey = 'liquid_glass_navigation_enabled';
+
+  LiquidGlassNavigationNotifier() : super(defaultValue) {
+    _loadPreference();
+  }
+
+  static bool defaultForCapabilities(LiquidGlassCapabilities? capabilities) {
+    final isApplePlatform =
+        defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS;
+    return isApplePlatform && capabilities?.nativeGlass == true;
+  }
+
+  static bool get defaultValue =>
+      defaultForCapabilities(LiquidGlass.cachedCapabilities);
+
+  bool _changedLocally = false;
+
+  Future<void> _loadPreference() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted || _changedLocally) return;
+      final savedValue = prefs.getBool(preferenceKey);
+      if (savedValue != null) {
+        state = savedValue;
+        return;
+      }
+
+      final capabilities =
+          LiquidGlass.cachedCapabilities ?? await LiquidGlass.capabilities();
+      if (!mounted || _changedLocally) return;
+      state = defaultForCapabilities(capabilities);
+    } catch (_) {
+      if (!mounted || _changedLocally) return;
+      state = defaultValue;
+    }
+  }
+
+  Future<void> setEnabled(bool enabled) async {
+    _changedLocally = true;
+    state = enabled;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(preferenceKey, enabled);
+    } catch (_) {
+      // Keep the in-memory value when persistence is unavailable.
+    }
+  }
+
+  Future<void> resetToDefault() async {
+    final capabilities =
+        LiquidGlass.cachedCapabilities ?? await LiquidGlass.capabilities();
+    await setEnabled(defaultForCapabilities(capabilities));
+  }
+}
+
+final liquidGlassNavigationProvider =
+    StateNotifierProvider<LiquidGlassNavigationNotifier, bool>((ref) {
+  return LiquidGlassNavigationNotifier();
+});
+
+/// Controls the transparency of Flutter-drawn glass on non-Apple platforms.
+/// Native iOS and macOS materials continue to follow the system appearance.
+class FallbackGlassTransparencyNotifier extends StateNotifier<double> {
+  static const String preferenceKey = 'fallback_glass_transparency';
+  static const double defaultValue = 0.4;
+
+  FallbackGlassTransparencyNotifier() : super(defaultValue) {
+    _loadPreference();
+  }
+
+  bool _changedLocally = false;
+
+  static double normalize(double value) => value.clamp(0.0, 1.0).toDouble();
+
+  Future<void> _loadPreference() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted || _changedLocally) return;
+      state = normalize(prefs.getDouble(preferenceKey) ?? defaultValue);
+    } catch (_) {
+      if (!mounted || _changedLocally) return;
+      state = defaultValue;
+    }
+  }
+
+  void previewTransparency(double value) {
+    _changedLocally = true;
+    state = normalize(value);
+  }
+
+  Future<void> setTransparency(double value) async {
+    previewTransparency(value);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(preferenceKey, state);
+    } catch (_) {
+      // Keep the in-memory value when persistence is unavailable.
+    }
+  }
+
+  Future<void> resetToDefault() => setTransparency(defaultValue);
+}
+
+final fallbackGlassTransparencyProvider = StateNotifierProvider<
+    FallbackGlassTransparencyNotifier, double>((ref) {
+  return FallbackGlassTransparencyNotifier();
+});
 
 /// 字幕库匹配优先级
 enum SubtitleLibraryPriority {
@@ -69,6 +189,45 @@ class SubtitleLibraryPriorityNotifier
 final subtitleLibraryPriorityProvider = StateNotifierProvider<
     SubtitleLibraryPriorityNotifier, SubtitleLibraryPriority>((ref) {
   return SubtitleLibraryPriorityNotifier();
+});
+
+/// Controls how tapping an audio file updates the playback queue.
+class AudioTapPlaylistModeNotifier
+    extends StateNotifier<AudioTapPlaylistMode> {
+  static const String preferenceKey = 'audio_tap_playlist_mode';
+
+  AudioTapPlaylistModeNotifier() : super(AudioTapPlaylistMode.replaceQueue) {
+    _preferenceLoad = _loadPreference();
+  }
+
+  late final Future<void> _preferenceLoad;
+  final _preference = PersistentEnumPreference<AudioTapPlaylistMode>(
+    key: preferenceKey,
+    values: AudioTapPlaylistMode.values,
+    fallback: AudioTapPlaylistMode.replaceQueue,
+  );
+
+  Future<void> _loadPreference() async {
+    final savedMode = await _preference.load();
+    if (savedMode != null) {
+      state = savedMode;
+    }
+  }
+
+  Future<void> updateMode(AudioTapPlaylistMode mode) async {
+    state = mode;
+    await _preference.save(mode);
+  }
+
+  Future<AudioTapPlaylistMode> getMode() async {
+    await _preferenceLoad;
+    return state;
+  }
+}
+
+final audioTapPlaylistModeProvider = StateNotifierProvider<
+    AudioTapPlaylistModeNotifier, AudioTapPlaylistMode>((ref) {
+  return AudioTapPlaylistModeNotifier();
 });
 
 /// 音频格式类型
@@ -160,13 +319,15 @@ class LLMSettings {
   static const int defaultConcurrency = 3;
 
   final String apiUrl;
+  final LLMApiProtocol apiProtocol;
   final String apiKey;
   final String model;
   final String prompt;
   final int concurrency;
 
   const LLMSettings({
-    this.apiUrl = 'https://api.openai.com/v1/chat/completions',
+    this.apiUrl = 'https://api.openai.com/v1',
+    this.apiProtocol = LLMApiProtocol.chatCompletions,
     this.apiKey = '',
     this.model = 'gpt-3.5-turbo',
     this.prompt = '',
@@ -180,6 +341,7 @@ class LLMSettings {
 
   LLMSettings copyWith({
     String? apiUrl,
+    LLMApiProtocol? apiProtocol,
     String? apiKey,
     String? model,
     String? prompt,
@@ -187,6 +349,7 @@ class LLMSettings {
   }) {
     return LLMSettings(
       apiUrl: apiUrl ?? this.apiUrl,
+      apiProtocol: apiProtocol ?? this.apiProtocol,
       apiKey: apiKey ?? this.apiKey,
       model: model ?? this.model,
       prompt: prompt ?? this.prompt,
@@ -199,6 +362,17 @@ class LLMSettings {
 
 class LLMSettingsNotifier extends StateNotifier<LLMSettings> {
   static const String _prefix = 'llm_settings_';
+  static const String apiUrlPreferenceKey = '${_prefix}api_url';
+  static const String apiProtocolPreferenceKey = '${_prefix}api_protocol';
+  static const String apiKeyPreferenceKey = '${_prefix}api_key';
+  static const String modelPreferenceKey = '${_prefix}model';
+  static const String promptPreferenceKey = '${_prefix}prompt';
+  static const String concurrencyPreferenceKey = '${_prefix}concurrency';
+
+  bool _changedLocally = false;
+  bool _settingsLoaded = false;
+
+  bool get isLoaded => _settingsLoaded;
 
   LLMSettingsNotifier() : super(const LLMSettings()) {
     _loadSettings();
@@ -207,33 +381,49 @@ class LLMSettingsNotifier extends StateNotifier<LLMSettings> {
   Future<void> _loadSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      _settingsLoaded = true;
+      if (!mounted || _changedLocally) return;
+      final savedApiUrl = prefs.getString(apiUrlPreferenceKey) ?? state.apiUrl;
+      final apiProtocol = LLMApiProtocol.fromPreference(
+        prefs.getString(apiProtocolPreferenceKey),
+        apiUrl: savedApiUrl,
+      );
       state = LLMSettings(
-        apiUrl: prefs.getString('${_prefix}api_url') ?? state.apiUrl,
-        apiKey: prefs.getString('${_prefix}api_key') ?? state.apiKey,
-        model: prefs.getString('${_prefix}model') ?? state.model,
-        prompt: prefs.getString('${_prefix}prompt') ?? state.prompt,
+        apiUrl: LLMApiProtocol.baseUrlFrom(savedApiUrl),
+        apiProtocol: apiProtocol,
+        apiKey: prefs.getString(apiKeyPreferenceKey) ?? state.apiKey,
+        model: prefs.getString(modelPreferenceKey) ?? state.model,
+        prompt: prefs.getString(promptPreferenceKey) ?? state.prompt,
         concurrency: LLMSettings.normalizeConcurrency(
-          prefs.getInt('${_prefix}concurrency'),
+          prefs.getInt(concurrencyPreferenceKey),
         ),
       );
     } catch (e) {
       // ignore
+    } finally {
+      _settingsLoaded = true;
     }
   }
 
   Future<void> updateSettings(LLMSettings settings) async {
+    _changedLocally = true;
     final normalizedSettings = settings.copyWith(
+      apiUrl: LLMApiProtocol.baseUrlFrom(settings.apiUrl),
       concurrency: LLMSettings.normalizeConcurrency(settings.concurrency),
     );
     state = normalizedSettings;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('${_prefix}api_url', normalizedSettings.apiUrl);
-      await prefs.setString('${_prefix}api_key', normalizedSettings.apiKey);
-      await prefs.setString('${_prefix}model', normalizedSettings.model);
-      await prefs.setString('${_prefix}prompt', normalizedSettings.prompt);
+      await prefs.setString(apiUrlPreferenceKey, normalizedSettings.apiUrl);
+      await prefs.setString(
+        apiProtocolPreferenceKey,
+        normalizedSettings.apiProtocol.preferenceValue,
+      );
+      await prefs.setString(apiKeyPreferenceKey, normalizedSettings.apiKey);
+      await prefs.setString(modelPreferenceKey, normalizedSettings.model);
+      await prefs.setString(promptPreferenceKey, normalizedSettings.prompt);
       await prefs.setInt(
-        '${_prefix}concurrency',
+        concurrencyPreferenceKey,
         normalizedSettings.concurrency,
       );
     } catch (e) {
@@ -286,6 +476,50 @@ class TranslationSourceNotifier extends StateNotifier<TranslationSource> {
 final translationSourceProvider =
     StateNotifierProvider<TranslationSourceNotifier, TranslationSource>((ref) {
   return TranslationSourceNotifier();
+});
+
+/// Controls whether translated lyrics are written to the subtitle library.
+class AutoSaveTranslatedLyricsNotifier extends StateNotifier<bool> {
+  static const String preferenceKey = 'auto_save_translated_lyrics';
+
+  AutoSaveTranslatedLyricsNotifier() : super(true) {
+    _preferenceLoad = _loadPreference();
+  }
+
+  late final Future<void> _preferenceLoad;
+  bool _changedLocally = false;
+
+  Future<void> _loadPreference() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted || _changedLocally) return;
+      state = prefs.getBool(preferenceKey) ?? true;
+    } catch (_) {
+      if (!mounted || _changedLocally) return;
+      state = true;
+    }
+  }
+
+  Future<bool> resolvedEnabled() async {
+    await _preferenceLoad;
+    return state;
+  }
+
+  Future<void> setEnabled(bool enabled) async {
+    _changedLocally = true;
+    state = enabled;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(preferenceKey, enabled);
+    } catch (_) {
+      // Keep the in-memory value when persistence is unavailable.
+    }
+  }
+}
+
+final autoSaveTranslatedLyricsProvider =
+    StateNotifierProvider<AutoSaveTranslatedLyricsNotifier, bool>((ref) {
+  return AutoSaveTranslatedLyricsNotifier();
 });
 
 /// 翻译语言设置
@@ -375,6 +609,7 @@ class AudioFormatPreference {
 class AudioFormatPreferenceNotifier
     extends StateNotifier<AudioFormatPreference> {
   static const String _preferenceKey = 'audio_format_preference';
+  bool _changedLocally = false;
 
   AudioFormatPreferenceNotifier() : super(const AudioFormatPreference()) {
     _loadPreference();
@@ -383,6 +618,7 @@ class AudioFormatPreferenceNotifier
   Future<void> _loadPreference() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (_changedLocally) return;
       final savedOrder = prefs.getStringList(_preferenceKey);
 
       if (savedOrder != null && savedOrder.isNotEmpty) {
@@ -409,6 +645,7 @@ class AudioFormatPreferenceNotifier
   }
 
   Future<void> updatePriority(List<AudioFormat> newPriority) async {
+    _changedLocally = true;
     state = state.copyWith(priority: newPriority);
     await _savePreference();
   }
@@ -424,6 +661,7 @@ class AudioFormatPreferenceNotifier
   }
 
   Future<void> resetToDefault() async {
+    _changedLocally = true;
     state = const AudioFormatPreference();
     await _savePreference();
   }
@@ -495,8 +733,7 @@ class PreloadNextSettings {
 }
 
 /// 下一首预加载设置控制器
-class PreloadNextSettingsNotifier
-    extends StateNotifier<PreloadNextSettings> {
+class PreloadNextSettingsNotifier extends StateNotifier<PreloadNextSettings> {
   static const String _modeKey = 'preload_next_mode';
   static const String _customKey = 'preload_next_custom_seconds';
 
@@ -597,6 +834,7 @@ class PrivacyModeSettingsNotifier extends StateNotifier<PrivacyModeSettings> {
   static const String _blurCoverInAppKey = 'privacy_mode_blur_cover_in_app';
   static const String _maskTitleKey = 'privacy_mode_mask_title';
   static const String _customTitleKey = 'privacy_mode_custom_title';
+  bool _changedLocally = false;
 
   PrivacyModeSettingsNotifier() : super(const PrivacyModeSettings()) {
     _loadPreferences();
@@ -605,6 +843,7 @@ class PrivacyModeSettingsNotifier extends StateNotifier<PrivacyModeSettings> {
   Future<void> _loadPreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (!mounted || _changedLocally) return;
       final blurCover = prefs.getBool(_blurCoverKey) ?? true;
       final blurCoverInApp = prefs.getBool(_blurCoverInAppKey) ?? false;
 
@@ -622,29 +861,49 @@ class PrivacyModeSettingsNotifier extends StateNotifier<PrivacyModeSettings> {
   }
 
   Future<void> setEnabled(bool enabled) async {
+    _changedLocally = true;
     state = state.copyWith(enabled: enabled);
     await _savePreference(_enabledKey, enabled);
   }
 
   Future<void> setBlurCover(bool blur) async {
+    _changedLocally = true;
     state = state.copyWith(blurCover: blur);
     await _savePreference(_blurCoverKey, blur);
   }
 
   Future<void> setBlurCoverInApp(bool blur) async {
+    _changedLocally = true;
     state = state.copyWith(blurCoverInApp: blur);
     await _savePreference(_blurCoverInAppKey, blur);
   }
 
   Future<void> setMaskTitle(bool mask) async {
+    _changedLocally = true;
     state = state.copyWith(maskTitle: mask);
     await _savePreference(_maskTitleKey, mask);
   }
 
   Future<void> setCustomTitle(String title) async {
+    _changedLocally = true;
     state = state.copyWith(customTitle: title);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_customTitleKey, title);
+  }
+
+  Future<void> resetToDefault() async {
+    _changedLocally = true;
+    state = const PrivacyModeSettings();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_enabledKey, state.enabled);
+      await prefs.setBool(_blurCoverKey, state.blurCover);
+      await prefs.setBool(_blurCoverInAppKey, state.blurCoverInApp);
+      await prefs.setBool(_maskTitleKey, state.maskTitle);
+      await prefs.setString(_customTitleKey, state.customTitle);
+    } catch (_) {
+      // ignore
+    }
   }
 
   Future<void> _savePreference(String key, bool value) async {
@@ -692,10 +951,10 @@ class AudioHapticsSettings {
   }
 }
 
-class AudioHapticsSettingsNotifier
-    extends StateNotifier<AudioHapticsSettings> {
+class AudioHapticsSettingsNotifier extends StateNotifier<AudioHapticsSettings> {
   static const String _enabledKey = 'audio_haptics_enabled';
   static const String _intensityKey = 'audio_haptics_intensity';
+  bool _changedLocally = false;
 
   AudioHapticsSettingsNotifier() : super(const AudioHapticsSettings()) {
     _loadPreferences();
@@ -704,6 +963,7 @@ class AudioHapticsSettingsNotifier
   Future<void> _loadPreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (!mounted || _changedLocally) return;
       if (!mounted) return;
       state = AudioHapticsSettings(
         enabled: prefs.getBool(_enabledKey) ?? false,
@@ -719,6 +979,7 @@ class AudioHapticsSettingsNotifier
   }
 
   Future<void> setEnabled(bool enabled) async {
+    _changedLocally = true;
     state = state.copyWith(enabled: enabled);
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -729,6 +990,7 @@ class AudioHapticsSettingsNotifier
   }
 
   Future<void> setIntensity(double intensity) async {
+    _changedLocally = true;
     final normalized = AudioHapticsSettings.normalizeIntensity(intensity);
     state = state.copyWith(intensity: normalized);
     try {
@@ -738,11 +1000,70 @@ class AudioHapticsSettingsNotifier
       // ignore
     }
   }
+
+  Future<void> resetToDefault() async {
+    _changedLocally = true;
+    state = const AudioHapticsSettings();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_enabledKey, state.enabled);
+      await prefs.setDouble(_intensityKey, state.intensity);
+    } catch (_) {
+      // ignore
+    }
+  }
 }
 
-final audioHapticsSettingsProvider = StateNotifierProvider<
-    AudioHapticsSettingsNotifier, AudioHapticsSettings>((ref) {
+final audioHapticsSettingsProvider =
+    StateNotifierProvider<AudioHapticsSettingsNotifier, AudioHapticsSettings>(
+        (ref) {
   return AudioHapticsSettingsNotifier();
+});
+
+class AudioGainSettingsNotifier extends StateNotifier<AudioGainSettings> {
+  static const String preferenceKey = 'global_audio_gain_db';
+  bool _changedLocally = false;
+
+  AudioGainSettingsNotifier() : super(const AudioGainSettings()) {
+    _loadPreference();
+  }
+
+  Future<void> _loadPreference() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted || _changedLocally) return;
+      state = AudioGainSettings(
+        decibels: AudioGainSettings.normalize(
+          prefs.getDouble(preferenceKey) ?? AudioGainSettings.defaultDecibels,
+        ),
+      );
+    } catch (_) {
+      if (!mounted || _changedLocally) return;
+      state = const AudioGainSettings();
+    }
+  }
+
+  Future<void> setDecibels(double decibels) async {
+    _changedLocally = true;
+    state = AudioGainSettings(
+      decibels: AudioGainSettings.normalize(decibels),
+    );
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(preferenceKey, state.decibels);
+    } catch (_) {
+      // Keep the in-memory setting when persistence is unavailable.
+    }
+  }
+
+  Future<void> resetToDefault() {
+    return setDecibels(AudioGainSettings.defaultDecibels);
+  }
+}
+
+final audioGainSettingsProvider =
+    StateNotifierProvider<AudioGainSettingsNotifier, AudioGainSettings>((ref) {
+  return AudioGainSettingsNotifier();
 });
 
 /// 分页大小设置

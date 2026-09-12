@@ -320,6 +320,11 @@ class SJa extends S {
   String get includeMode => '含む';
 
   @override
+  String includeModeTapAgainHint(String searchType) {
+    return '含む：$searchType（もう一度タップすると除外モードに切り替わります）';
+  }
+
+  @override
   String get noResults => '結果なし';
 
   @override
@@ -382,6 +387,15 @@ class SJa extends S {
   String get floatingLyricTouchDisabled => 'ロック中 - 長押しでロック解除';
 
   @override
+  String get floatingLyricClickThrough => 'フローティング字幕のクリック透過';
+
+  @override
+  String get floatingLyricClickThroughEnabled => '有効 - フローティング字幕がマウス操作を無視します';
+
+  @override
+  String get floatingLyricClickThroughDisabled => '無効 - フローティング字幕をドラッグできます';
+
+  @override
   String get floatingFPS => 'FPS表示';
 
   @override
@@ -438,10 +452,23 @@ class SJa extends S {
   String get uiSettingsSubtitle => 'プレーヤー、詳細ページ、カードなど';
 
   @override
+  String get liquidGlassNavigation => 'リキッドグラスナビゲーション';
+
+  @override
+  String get liquidGlassNavigationDesc =>
+      'ガラス素材のナビゲーションとミニプレーヤー。Apple 系 OS 26 以降ではデフォルトで有効';
+
+  @override
+  String get fallbackGlassTransparency => 'リキッドグラスの透明度';
+
+  @override
+  String get fallbackGlassTransparencyDesc => 'アプリ描画のガラス透明度を調整';
+
+  @override
   String get preferenceSettings => '環境設定';
 
   @override
-  String get preferenceSettingsSubtitle => '翻訳ソース、ブロック、オーディオ設定など';
+  String get preferenceSettingsSubtitle => '翻訳、再生、ネットワーク';
 
   @override
   String get aboutTitle => 'について';
@@ -843,6 +870,12 @@ class SJa extends S {
   String get translationTargetLanguage => 'ターゲット言語';
 
   @override
+  String get autoSaveTranslatedLyrics => '翻訳した歌詞を自動保存';
+
+  @override
+  String get autoSaveTranslatedLyricsDesc => '翻訳を字幕ライブラリに保存。オフでは一時表示のみ';
+
+  @override
   String get selectTranslationTargetLanguage => 'ターゲット言語を選択：';
 
   @override
@@ -902,13 +935,46 @@ class SJa extends S {
   String get llmSettings => 'LLM設定';
 
   @override
-  String get llmSettingsSubtitle => 'API URL、キー、モデルを設定';
+  String get llmSettingsSubtitle => 'API URL、プロトコル、キー、モデル';
 
   @override
   String get audioFormatPreference => 'オーディオフォーマット設定';
 
   @override
-  String get audioFormatSubtitle => 'オーディオフォーマットの優先順位を設定';
+  String get audioFormatSubtitle => '音声形式の優先順位';
+
+  @override
+  String get audioTapPlaylistMode => 'プレイリストへの追加方法';
+
+  @override
+  String get selectAudioTapPlaylistMode => '音声をタップしたときのプレイリスト更新方法を選択：';
+
+  @override
+  String get audioTapPlaylistModeReplace => '置き換えモード';
+
+  @override
+  String get audioTapPlaylistModeReplaceDescription =>
+      'タップした音声と同じフォルダー内の再生可能な音声すべてで現在のプレイリストを置き換えます。';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectory => '追加モード';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectoryDescription =>
+      'タップした音声と同じフォルダー内の再生可能な音声をすべて末尾に追加します。既存のトラックは重複しません。';
+
+  @override
+  String get audioTapPlaylistModeAppendSingle => '単一音声追加モード';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleDescription =>
+      'タップした音声だけを末尾に追加します。既存のトラックは重複しません。';
+
+  @override
+  String get audioTapPlaylistModeAppendChip => '追加モード';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleChip => '単一音声追加モード';
 
   @override
   String get preloadNextTitle => '次をプリロード';
@@ -948,33 +1014,43 @@ class SJa extends S {
   String get keepScreenAwake => '画面を常にオン';
 
   @override
-  String get keepScreenAwakeDesc =>
-      '有効にすると、音声トラックがある間は字幕を見やすくするため画面をオンのままにします。';
+  String get keepScreenAwakeDesc => '再生中は画面を点灯';
 
   @override
   String get audioHaptics => 'オーディオ触覚フィードバック(Beta)';
 
   @override
-  String get audioHapticsDesc =>
-      'ダウンロード済み音声のみ対応し、アプリが前面にある時だけ有効です。音声の特徴に合わせて端末を振動させます。バッテリー消費が増える場合があります。';
+  String get audioHapticsDesc => 'ダウンロード音声に合わせて振動（フォアグラウンドのみ）';
 
   @override
   String get audioHapticsIntensity => '強度';
 
   @override
+  String get audioGain => 'グローバルオーディオゲイン';
+
+  @override
+  String get audioGainDesc => '0 dB は原音。過度な増幅は歪みや聴力障害の原因になります';
+
+  @override
+  String get audioGainAttenuationDesc => '全音声を減衰。0 dB は原音';
+
+  @override
+  String get audioGainPassthroughDesc => 'オーディオパススルー中は使用不可';
+
+  @override
   String get blockingSettings => 'ブロック設定';
 
   @override
-  String get blockingSettingsSubtitle => 'ブロック中のタグ、声優、サークルを管理';
+  String get blockingSettingsSubtitle => 'ブロック中のタグ、声優、サークル';
 
   @override
   String get audioPassthrough => 'オーディオパススルー(Beta)';
 
   @override
-  String get audioPassthroughDescWindows => 'WASAPI排他モードを有効にしてロスレス出力（再起動が必要）';
+  String get audioPassthroughDescWindows => 'WASAPI 排他出力を使用（再起動が必要）';
 
   @override
-  String get audioPassthroughDescMac => 'CoreAudio排他モードを有効にしてロスレス出力';
+  String get audioPassthroughDescMac => 'CoreAudio 排他出力を使用';
 
   @override
   String get audioPassthroughDisableDesc => 'オーディオパススルーモードを無効にする';
@@ -1646,26 +1722,26 @@ class SJa extends S {
   String get surfaceColor => 'サーフェス';
 
   @override
-  String get playerButtonSettingsSubtitle => 'プレーヤーコントロールボタンの順序をカスタマイズ';
+  String get playerButtonSettingsSubtitle => 'プレーヤーボタンの順序';
 
   @override
-  String get playerLyricStyleSubtitle => 'ミニプレーヤーとフルスクリーンプレーヤーの字幕スタイルをカスタマイズ';
+  String get playerLyricStyleSubtitle => 'ミニ・全画面の歌詞スタイル';
 
   @override
-  String get workDetailDisplaySubtitle => '作品詳細ページの表示項目を制御';
+  String get workDetailDisplaySubtitle => '詳細ページの表示内容';
 
   @override
-  String get workCardDisplaySubtitle => '作品カードの表示項目を制御';
+  String get workCardDisplaySubtitle => '作品カードの表示内容';
 
   @override
-  String get myTabsDisplaySubtitle => 'マイページのタブ表示を制御';
+  String get myTabsDisplaySubtitle => 'マイページに表示するタブ';
 
   @override
   String get pageSizeSettings => 'ページあたりの表示数';
 
   @override
   String pageSizeCurrent(int size) {
-    return '現在の設定: $size 件/ページ';
+    return '1ページ $size 件';
   }
 
   @override
@@ -1686,20 +1762,19 @@ class SJa extends S {
   String get autoSwitchedToLlm => '自動切替: LLM翻訳';
 
   @override
-  String get translationDescGoogle => 'Googleサービスへのネットワークアクセスが必要';
+  String get translationDescGoogle => 'Google サービスへの接続が必要';
 
   @override
-  String get translationDescYoudao => 'デフォルトネットワークで動作';
+  String get translationDescYoudao => '現在のネットワークを使用';
 
   @override
-  String get translationDescMicrosoft => 'デフォルトネットワークで動作';
+  String get translationDescMicrosoft => '現在のネットワークを使用';
 
   @override
-  String get translationDescLlm => 'OpenAI互換API、手動でAPI Keyの設定が必要';
+  String get translationDescLlm => 'OpenAI 互換 API の設定が必要';
 
   @override
-  String get audioPassthroughDescAndroid =>
-      '外部デコーダーへの生ビットストリーム出力 (AC3/DTS) を許可。オーディオデバイスを占有する場合があります。';
+  String get audioPassthroughDescAndroid => 'AC3/DTS の生音声を外部デコーダーへ出力';
 
   @override
   String get permissionExplanation => '権限の説明';
@@ -2129,7 +2204,7 @@ class SJa extends S {
 
   @override
   String get lyricTranslationConfirmMessage =>
-      '現在の翻訳設定で再生中の歌詞を翻訳します。完了後はすぐに翻訳文を表示し、字幕ライブラリの「保存済み」フォルダーへ同名の .lrc として上書き保存します。翻訳中に曲を切り替えると、この結果は破棄されます。';
+      '再生中の歌詞を翻訳し、完了後すぐに表示します。自動保存がオンの場合は、字幕ライブラリの同名 .lrc を上書きします。翻訳中に曲を切り替えると結果は破棄されます。';
 
   @override
   String get unlock => 'ロック解除';
@@ -2144,23 +2219,7 @@ class SJa extends S {
   String get floatingSubtitle => 'フローティング字幕';
 
   @override
-  String get appendMode => '追加モード';
-
-  @override
-  String get appendModeStatusOn => '追加モード：オン';
-
-  @override
-  String get appendModeStatusOff => '追加モード：オフ';
-
-  @override
   String get playlistEmpty => 'プレイリストが空です';
-
-  @override
-  String get appendModeEnabled => '追加モードが有効です';
-
-  @override
-  String get appendModeHint =>
-      '次にタップした音声は現在のプレイリストの末尾に追加されます。リスト全体を置き換えません。\n同じトラックは重複追加されません。';
 
   @override
   String get gotIt => '了解';
@@ -2783,6 +2842,9 @@ class SJa extends S {
   String get restoreDefaultSettings => 'デフォルト設定に戻す';
 
   @override
+  String get confirmRestoreDefaultSettings => 'デフォルト設定に戻しますか？';
+
+  @override
   String get guideInPrefix => '';
 
   @override
@@ -2998,6 +3060,9 @@ class SJa extends S {
 
   @override
   String get savedToSubtitleLibrary => '字幕ライブラリに保存しました';
+
+  @override
+  String get translatedLyricsNotSaved => '翻訳が完了しました。現在の再生中のみ表示します。';
 
   @override
   String get saveToLocal => 'ローカルに保存';
@@ -3340,7 +3405,22 @@ class SJa extends S {
   String get apiEndpointUrl => 'APIエンドポイントURL';
 
   @override
-  String get openaiCompatibleEndpoint => 'OpenAI互換エンドポイントURL';
+  String get apiBaseUrl => 'APIベースURL';
+
+  @override
+  String get apiProtocol => 'APIプロトコル';
+
+  @override
+  String get chatCompletionsProtocol => 'Chat Completions (/chat/completions)';
+
+  @override
+  String get responsesProtocol => 'Responses (/responses)';
+
+  @override
+  String get anthropicProtocol => 'Anthropic Messages (/messages)';
+
+  @override
+  String get openaiCompatibleEndpoint => '選択したプロトコルのサフィックスが自動的に追加されます';
 
   @override
   String get pleaseEnterApiUrl => 'APIエンドポイントURLを入力してください';
@@ -3461,6 +3541,9 @@ class SJa extends S {
   String get showSubtitleTagOnCover => 'カバー画像に字幕タグを表示';
 
   @override
+  String get showAgeRatingOnDetail => '作品詳細ページに年齢区分を表示';
+
+  @override
   String get recommendationsLabel => '関連おすすめ';
 
   @override
@@ -3501,6 +3584,9 @@ class SJa extends S {
 
   @override
   String get showSubtitleTagOnCard => '作品カードに字幕タグを表示';
+
+  @override
+  String get showAgeRatingOnCard => '作品カードに年齢区分を表示';
 
   @override
   String get showOnlineMarks => 'オンラインマークの作品を表示';
@@ -3606,4 +3692,63 @@ class SJa extends S {
 
   @override
   String get logEmpty => 'ログはありません';
+
+  @override
+  String get proxySettingsOptional => 'プロキシ';
+
+  @override
+  String get loginAdvancedSettings => '詳細設定';
+
+  @override
+  String proxyEnabled(String address) {
+    return '有効: $address';
+  }
+
+  @override
+  String get proxyAddressNotSet => '未設定（直接接続）';
+
+  @override
+  String get proxyHttpDescription => 'HTTP プロキシ経由で接続';
+
+  @override
+  String get useProxy => 'プロキシを使用';
+
+  @override
+  String get proxyAddress => 'プロキシアドレス';
+
+  @override
+  String get proxyAddressFormat => '形式: ホスト:ポート（例: 127.0.0.1:7890）';
+
+  @override
+  String get applyProxyAddress => 'プロキシアドレスを適用';
+
+  @override
+  String get invalidProxyAddress => '有効な HTTP プロキシのアドレスとポートを入力してください';
+
+  @override
+  String get proxyModeDirect => '直接接続';
+
+  @override
+  String get proxyModeSystem => 'システムプロキシ';
+
+  @override
+  String get proxyModeManual => '手動プロキシ';
+
+  @override
+  String get proxyModeDirectDescription => 'プロキシを使用せずに接続';
+
+  @override
+  String get proxyModeSystemDescription => 'オペレーティングシステムのプロキシ設定を使用';
+
+  @override
+  String get proxyModeManualDescription => '下で設定した HTTP プロキシを使用';
+
+  @override
+  String get playlistDisplayFormat => 'プレイリストの表示形式';
+
+  @override
+  String get playlistDisplayFormatMasonry => 'ウォーターフォール';
+
+  @override
+  String get playlistDisplayFormatList => 'リスト';
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:dio/dio.dart';
@@ -11,6 +12,7 @@ import '../utils/encoding_utils.dart';
 
 class CacheService {
   static final _log = LogService.instance;
+  static final Map<String, _AudioCacheDownload> _audioCacheDownloads = {};
   // 缓存时长（过期后自动删除）
   static const Duration workDetailCacheDuration =
       Duration(hours: 24); // 作品详情缓存24小时（SharedPreferences）
@@ -74,16 +76,24 @@ class CacheService {
     return (await _audioFinalFile(hash)).path;
   }
 
-  static Future<void> finalizeAudioCacheFile(String hash,
+  static Future<bool> isAudioCachePath(String path, String hash) async {
+    final finalPath = (await _audioFinalFile(hash)).path;
+    return p.equals(p.normalize(path), p.normalize(finalPath));
+  }
+
+  static Future<bool> finalizeAudioCacheFile(String hash,
       {required int expectedSize}) async {
     final tempFile = await _audioTempFile(hash);
     if (!await tempFile.exists()) {
-      return;
+      return false;
     }
 
     final currentSize = await tempFile.length();
-    if (currentSize < expectedSize) {
-      return;
+    if (currentSize != expectedSize) {
+      _log.captureOutput(
+        '[Cache] 音频缓存大小校验失败: $hash, expected=$expectedSize, actual=$currentSize',
+      );
+      return false;
     }
 
     final finalFile = await _audioFinalFile(hash);
@@ -94,6 +104,21 @@ class CacheService {
 
     await tempFile.rename(finalFile.path);
     await _writeAudioCacheMeta(hash);
+    return true;
+  }
+
+  /// Removes only the streaming/preload cache for [hash]. Completed downloads
+  /// are stored separately and are intentionally left untouched.
+  static Future<void> invalidateAudioCache(String hash) async {
+    final finalFile = await _audioFinalFile(hash);
+    final tempFile = await _audioTempFile(hash);
+
+    for (final file in [finalFile, tempFile]) {
+      if (await file.exists()) {
+        await file.delete();
+      }
+    }
+    await _removeAudioCacheMeta(hash);
   }
 
   // 缓存大小上限配置键
@@ -201,6 +226,33 @@ class CacheService {
     required String hash,
     required String url,
     required Dio dio,
+  }) {
+    final key = _safeAudioHash(hash);
+    final existing = _audioCacheDownloads[key];
+    if (existing != null) return existing.future;
+
+    final cancelToken = CancelToken();
+    late final _AudioCacheDownload operation;
+    final future = _cacheAudioFile(
+      hash: hash,
+      url: url,
+      dio: dio,
+      cancelToken: cancelToken,
+    ).whenComplete(() {
+      if (identical(_audioCacheDownloads[key], operation)) {
+        _audioCacheDownloads.remove(key);
+      }
+    });
+    operation = _AudioCacheDownload(future, cancelToken);
+    _audioCacheDownloads[key] = operation;
+    return future;
+  }
+
+  static Future<String?> _cacheAudioFile({
+    required String hash,
+    required String url,
+    required Dio dio,
+    required CancelToken cancelToken,
   }) async {
     try {
       final finalFile = await _audioFinalFile(hash);
@@ -226,18 +278,68 @@ class CacheService {
 
       // 配置服务器Cookie（如果存在）
       dio.options.headers.addAll(StorageService.serverCookieHeaders);
-      await dio.download(url, tempFile.path);
+      final response = await dio.download(
+        url,
+        tempFile.path,
+        cancelToken: cancelToken,
+      );
+
+      final responseLength = int.tryParse(
+        response.headers.value('content-length') ?? '',
+      );
+      final actualSize = await tempFile.length();
+      if (responseLength == null || responseLength <= 0) {
+        _log.captureOutput('[Cache] 音频响应缺少有效长度，放弃缓存: $hash');
+        await resetAudioCachePartial(hash);
+        return null;
+      }
+      if (actualSize != responseLength) {
+        _log.captureOutput(
+          '[Cache] 音频下载不完整，放弃缓存: $hash, expected=$responseLength, actual=$actualSize',
+        );
+        await resetAudioCachePartial(hash);
+        return null;
+      }
 
       // 下载完成后重命名为最终文件并写入 meta
-      await finalizeAudioCacheFile(hash, expectedSize: await tempFile.length());
+      final finalized = await finalizeAudioCacheFile(
+        hash,
+        expectedSize: responseLength,
+      );
+      if (!finalized) {
+        await resetAudioCachePartial(hash);
+        return null;
+      }
 
       // 检查并自动清理缓存
       await checkAndCleanCache();
       return (await _audioFinalFile(hash)).path;
     } catch (e) {
       _log.captureOutput('[Cache] 缓存音频文件失败: $e');
+      await resetAudioCachePartial(hash);
       return null;
     }
+  }
+
+  /// Waits briefly for a preload of [hash] to finish. If it is still active,
+  /// cancels it and waits for Dio to release the shared `.audio.part` file
+  /// before streaming playback starts using that file.
+  static Future<String?> settleAudioCacheDownload(
+    String hash, {
+    Duration timeout = const Duration(milliseconds: 300),
+  }) async {
+    final operation = _audioCacheDownloads[_safeAudioHash(hash)];
+    if (operation != null) {
+      try {
+        await operation.future.timeout(timeout);
+      } on TimeoutException {
+        operation.cancelToken.cancel('Audio playback needs the cache file');
+        await operation.future;
+      }
+    }
+    // Always recheck after settling. The download may have completed between
+    // the caller's cache miss and the operation lookup above.
+    return getCachedAudioFile(hash);
   }
 
   // 获取缓存的音频文件（基于 hash）
@@ -1144,4 +1246,11 @@ class CacheService {
     final size = await getCacheSize();
     return _formatBytes(size);
   }
+}
+
+class _AudioCacheDownload {
+  const _AudioCacheDownload(this.future, this.cancelToken);
+
+  final Future<String?> future;
+  final CancelToken cancelToken;
 }

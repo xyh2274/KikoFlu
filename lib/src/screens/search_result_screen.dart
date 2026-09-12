@@ -1,5 +1,3 @@
-import 'dart:io' show Platform;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -10,13 +8,17 @@ import '../providers/auth_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/log_service.dart';
 import '../widgets/works_grid_view.dart';
+import '../widgets/virtualized_sliver_collection.dart';
 import '../widgets/sort_dialog.dart';
-import '../widgets/pagination_bar.dart';
 import '../widgets/global_audio_player_wrapper.dart';
 import '../widgets/download_fab.dart';
-import '../widgets/overscroll_next_page_detector.dart';
 import '../utils/l10n_extensions.dart';
 import '../utils/subtitle_filter.dart';
+import '../utils/ui_tokens.dart';
+import '../widgets/floating_feed_toolbar.dart';
+import '../utils/system_ui_style.dart';
+import '../widgets/search_condition_chip.dart';
+import '../widgets/async_state_view.dart';
 
 class SearchResultScreen extends StatelessWidget {
   final String keyword;
@@ -99,21 +101,10 @@ class _SearchResultContentState extends ConsumerState<_SearchResultContent> {
     super.dispose();
   }
 
-  void _scrollToTop() {
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        0,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
-    }
-  }
-
   void _showSortDialog(BuildContext context) {
     final state = ref.read(searchResultProvider);
     showDialog(
       context: context,
-      barrierDismissible: !Platform.isIOS, // iOS 上防止点击外部区域意外关闭
       builder: (context) => CommonSortDialog(
         currentOption: state.sortOption,
         currentDirection: state.sortDirection,
@@ -129,14 +120,14 @@ class _SearchResultContentState extends ConsumerState<_SearchResultContent> {
     );
   }
 
-  Icon _getLayoutIcon(SearchLayoutType layoutType) {
+  IconData _getLayoutIcon(SearchLayoutType layoutType) {
     switch (layoutType) {
       case SearchLayoutType.bigGrid:
-        return const Icon(Icons.grid_3x3);
+        return Icons.grid_3x3;
       case SearchLayoutType.smallGrid:
-        return const Icon(Icons.view_list);
+        return Icons.view_list;
       case SearchLayoutType.list:
-        return const Icon(Icons.view_agenda);
+        return Icons.view_agenda;
     }
   }
 
@@ -151,96 +142,87 @@ class _SearchResultContentState extends ConsumerState<_SearchResultContent> {
     }
   }
 
-  Icon _getSubtitleFilterIcon(int subtitleFilter) {
+  IconData _getSubtitleFilterIcon(int subtitleFilter) {
     final mode = SubtitleFilterMode.fromValue(subtitleFilter);
-    return Icon(
-      mode == SubtitleFilterMode.withSubtitles
-          ? Icons.closed_caption
-          : Icons.closed_caption_disabled,
-      color: mode.isActive ? Theme.of(context).colorScheme.primary : null,
-    );
+    return mode == SubtitleFilterMode.withSubtitles
+        ? Icons.closed_caption
+        : Icons.closed_caption_disabled;
   }
 
   @override
   Widget build(BuildContext context) {
     final searchState = ref.watch(searchResultProvider);
 
-    final isLandscape =
-        MediaQuery.of(context).orientation == Orientation.landscape;
-    final horizontalPadding = isLandscape ? 24.0 : 0.0;
+    final horizontalPadding = FloatingToolbarLayout.horizontalPadding(context);
+
+    final topPadding = MediaQuery.paddingOf(context).top;
+    final systemOverlayStyle =
+        transparentSystemBarsForBrightness(Theme.of(context).brightness);
 
     return GlobalAudioPlayerWrapper(
-      child: Scaffold(
-        floatingActionButton: const DownloadFab(),
-        appBar: AppBar(
-          scrolledUnderElevation: 0,
-          elevation: 0,
-          titleSpacing: 0,
-          actions: [
-            if (horizontalPadding > 0) SizedBox(width: horizontalPadding - 8),
-            IconButton(
-              icon: _getLayoutIcon(searchState.layoutType),
-              iconSize: 22,
-              padding: const EdgeInsets.all(8),
-              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-              onPressed: () =>
-                  ref.read(searchResultProvider.notifier).toggleLayoutType(),
-              tooltip: _getLayoutTooltip(searchState.layoutType),
-            ),
-            IconButton(
-              icon: _getSubtitleFilterIcon(searchState.subtitleFilter),
-              iconSize: 22,
-              padding: const EdgeInsets.all(8),
-              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-              onPressed: () => ref
-                  .read(searchResultProvider.notifier)
-                  .toggleSubtitleFilter(),
-              tooltip: SubtitleFilterMode.fromValue(
-                searchState.subtitleFilter,
-              ).localizedTooltip(context),
-            ),
-            Padding(
-              padding: EdgeInsets.only(
-                  right: horizontalPadding > 0 ? horizontalPadding - 8 : 0),
-              child: IconButton(
-                icon: const Icon(Icons.sort),
-                iconSize: 22,
-                padding: const EdgeInsets.all(8),
-                constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-                onPressed: () => _showSortDialog(context),
-                tooltip: S.of(context).sort,
+      child: AnnotatedRegion(
+        value: systemOverlayStyle,
+        child: Scaffold(
+          floatingActionButton: const DownloadFab(),
+          body: Stack(
+            children: [
+              Positioned.fill(child: _buildBody(searchState)),
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: ProgressiveTopScrim(height: topPadding + 72),
               ),
-            ),
-          ],
-        ),
-        body: Column(
-          children: [
-            // 搜索信息行
-            Container(
-              width: double.infinity,
-              padding: EdgeInsets.symmetric(
-                horizontal: isLandscape ? 24.0 : 8.0,
-                vertical: 8,
-              ),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surface,
-                border: Border(
-                  bottom: BorderSide(
-                    color: Theme.of(context).dividerColor,
-                    width: 1,
-                  ),
+              Positioned(
+                top: topPadding + 8,
+                left: horizontalPadding,
+                right: horizontalPadding,
+                child: FloatingToolbarGlassRow(
+                  children: [
+                    FloatingToolbarSurface(
+                      child: FloatingToolbarIconButton(
+                        icon: Icons.arrow_back,
+                        tooltip: S.of(context).back,
+                        onPressed: () => Navigator.of(context).maybePop(),
+                      ),
+                    ),
+                    FloatingToolbarSurface(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          FloatingToolbarIconButton(
+                            icon: _getLayoutIcon(searchState.layoutType),
+                            tooltip: _getLayoutTooltip(searchState.layoutType),
+                            onPressed: () => ref
+                                .read(searchResultProvider.notifier)
+                                .toggleLayoutType(),
+                          ),
+                          FloatingToolbarIconButton(
+                            icon: _getSubtitleFilterIcon(
+                                searchState.subtitleFilter),
+                            tooltip: SubtitleFilterMode.fromValue(
+                              searchState.subtitleFilter,
+                            ).localizedTooltip(context),
+                            isSelected: SubtitleFilterMode.fromValue(
+                              searchState.subtitleFilter,
+                            ).isActive,
+                            onPressed: () => ref
+                                .read(searchResultProvider.notifier)
+                                .toggleSubtitleFilter(),
+                          ),
+                          FloatingToolbarIconButton(
+                            icon: Icons.sort,
+                            tooltip: S.of(context).sort,
+                            onPressed: () => _showSortDialog(context),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: _buildSearchInfo(context, searchState),
-              ),
-            ),
-            // 搜索结果内容
-            Expanded(
-              child: _buildBody(searchState),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -269,62 +251,39 @@ class _SearchResultContentState extends ConsumerState<_SearchResultContent> {
             final isRjNumber = RegExp(r'^\d+$').hasMatch(value);
             final displayValue = isRjNumber ? 'RJ$value' : value;
 
-            return Chip(
+            return SearchConditionChip(
               avatar: Icon(
                 isExclude
                     ? Icons.remove_circle_outline
                     : _getConditionIcon(type),
-                size: 16,
+                size: UiIconSize.small,
               ),
-              label: Text(
-                '$type: $displayValue',
-                style: const TextStyle(fontSize: 13),
-              ),
+              label: '$type: $displayValue',
               backgroundColor: isExclude
                   ? Theme.of(context).colorScheme.errorContainer
                   : Theme.of(context).colorScheme.secondaryContainer,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-              side: BorderSide.none,
             );
           }),
 
           // 高级筛选条件芯片
           if (minRate != null && minRate > 0)
-            Chip(
+            SearchConditionChip(
               avatar: const Icon(Icons.star, size: 16),
-              label: Text(
-                '${S.of(context).ratingLabel} ≥ ${minRate.toStringAsFixed(2)}',
-                style: const TextStyle(fontSize: 13),
-              ),
+              label:
+                  '${S.of(context).ratingLabel} ≥ ${minRate.toStringAsFixed(2)}',
               backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-              side: BorderSide.none,
             ),
           if (ageRating != null)
-            Chip(
+            SearchConditionChip(
               avatar: const Icon(Icons.shield, size: 16),
-              label: Text(
-                ageRating,
-                style: const TextStyle(fontSize: 13),
-              ),
+              label: ageRating,
               backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-              side: BorderSide.none,
             ),
           if (salesRange != null)
-            Chip(
+            SearchConditionChip(
               avatar: const Icon(Icons.trending_up, size: 16),
-              label: Text(
-                salesRange,
-                style: const TextStyle(fontSize: 13),
-              ),
+              label: salesRange,
               backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-              side: BorderSide.none,
             ),
 
           // 结果统计
@@ -413,128 +372,107 @@ class _SearchResultContentState extends ConsumerState<_SearchResultContent> {
 
   Widget _buildBody(SearchResultState searchState) {
     if (searchState.error != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.error_outline,
-              size: 64,
-              color: Theme.of(context).colorScheme.error,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              S.of(context).loadFailed,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              searchState.error!,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: () =>
-                  ref.read(searchResultProvider.notifier).refresh(),
-              icon: const Icon(Icons.refresh),
-              label: Text(S.of(context).retry),
-            ),
-          ],
+      return AsyncStateView(
+        icon: Icon(
+          Icons.error_outline,
+          size: 64,
+          color: Theme.of(context).colorScheme.error,
+        ),
+        title: Text(
+          S.of(context).loadFailed,
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        message: Text(
+          searchState.error!,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+          textAlign: TextAlign.center,
+        ),
+        action: ElevatedButton.icon(
+          onPressed: () => ref.read(searchResultProvider.notifier).refresh(),
+          icon: const Icon(Icons.refresh),
+          label: Text(S.of(context).retry),
         ),
       );
     }
 
     if (searchState.works.isEmpty && searchState.isLoading) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('...'),
-          ],
+      return const AsyncStateView(
+        icon: CircularProgressIndicator(),
+        message: Text('...'),
+        iconToTitleSpacing: UiSpacing.large,
+      );
+    }
+
+    if (searchState.works.isEmpty) {
+      return AsyncStateView(
+        icon: Icon(Icons.search_off, size: 64, color: Colors.grey[400]),
+        title: Text(
+          S.of(context).noResults,
+          style: Theme.of(context).textTheme.headlineSmall,
         ),
       );
     }
 
-    if (searchState.works.isEmpty && !searchState.isLoading) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.search_off, size: 64, color: Colors.grey[400]),
-            const SizedBox(height: 16),
-            Text(
-              S.of(context).noResults,
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-          ],
-        ),
-      );
-    }
-
-    return OverscrollNextPageDetector(
-      hasNextPage: searchState.hasMore,
+    return WorksGridView(
+      works: searchState.works,
+      layoutType: searchState.layoutType.toWorksLayoutType(),
+      scrollController: _scrollController,
       isLoading: searchState.isLoading,
-      onNextPage: () async {
-        await ref
+      isRefreshing: false,
+      isLoadingMore: searchState.isLoadingMore,
+      hasMore: searchState.hasMore,
+      error: searchState.error,
+      loadMoreError: searchState.loadMoreError,
+      onRetry: () => ref.read(searchResultProvider.notifier).refresh(),
+      showInlineLoadingIndicator: searchState.isLoading,
+      pagination: VirtualizedPagination(
+        currentPage: searchState.currentPage,
+        pageSize: searchState.pageSize,
+        totalCount: searchState.totalCount,
+        hasMore: searchState.hasMore,
+        isLoading: searchState.isLoading || searchState.isRefreshing,
+        onPreviousPage: () => ref
             .read(searchResultProvider.notifier)
-            .goToPage(searchState.currentPage + 1);
-        // 等待一帧后滚动到顶部，确保内容已加载
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _scrollToTop();
-        });
-      },
-      child: WorksGridView(
-        works: searchState.works,
-        layoutType: searchState.layoutType.toWorksLayoutType(),
-        scrollController: _scrollController,
-        isLoading: searchState.isLoading,
-        paginationWidget: _buildPaginationBar(searchState),
+            .goToPage(searchState.currentPage - 1),
+        onNextPage: () => ref
+            .read(searchResultProvider.notifier)
+            .goToPage(searchState.currentPage + 1),
+        onGoToPage: ref.read(searchResultProvider.notifier).goToPage,
+        nextPageOnOverscroll: true,
+        scrollDuration: const Duration(milliseconds: 300),
+        scrollCurve: Curves.easeOut,
+        endMessage: S.of(context).reachedEnd,
+        extraBuilder: searchState.rawWorks.length > searchState.works.length
+            ? (context) => Text(
+                  '${searchState.rawWorks.length - searchState.works.length} filtered',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                )
+            : null,
       ),
-    );
-  }
-
-  Widget _buildPaginationBar(SearchResultState searchState) {
-    return Column(
-      children: [
-        PaginationBar(
-          currentPage: searchState.currentPage,
-          pageSize: searchState.pageSize,
-          totalCount: searchState.totalCount,
-          hasMore: searchState.hasMore,
-          isLoading: searchState.isLoading,
-          onPreviousPage: () {
-            ref
-                .read(searchResultProvider.notifier)
-                .goToPage(searchState.currentPage - 1);
-            _scrollToTop();
-          },
-          onNextPage: () {
-            ref
-                .read(searchResultProvider.notifier)
-                .goToPage(searchState.currentPage + 1);
-            _scrollToTop();
-          },
-          onGoToPage: (page) {
-            ref.read(searchResultProvider.notifier).goToPage(page);
-          },
-          onScrollToTop: _scrollToTop,
-          endMessage: S.of(context).reachedEnd,
-        ),
-        if (searchState.rawWorks.length > searchState.works.length) ...[
-          const SizedBox(height: 8),
-          Text(
-            '${searchState.rawWorks.length - searchState.works.length} filtered',
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-              fontSize: 12,
+      sliversBefore: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.only(
+              top: MediaQuery.paddingOf(context).top + 64,
+              left: MediaQuery.orientationOf(context) == Orientation.landscape
+                  ? 24
+                  : 8,
+              right: MediaQuery.orientationOf(context) == Orientation.landscape
+                  ? 24
+                  : 8,
+              bottom: 8,
+            ),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: _buildSearchInfo(context, searchState),
             ),
           ),
-        ],
+        ),
       ],
     );
   }

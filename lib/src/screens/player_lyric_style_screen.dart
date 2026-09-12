@@ -2,21 +2,30 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../l10n/app_localizations.dart';
 import '../providers/player_lyric_style_provider.dart';
-import '../widgets/scrollable_appbar.dart';
 import '../widgets/settings_section.dart';
 
 class PlayerLyricStyleScreen extends ConsumerWidget {
   const PlayerLyricStyleScreen({super.key});
+
+  Future<void> _resetToDefault(BuildContext context, WidgetRef ref) async {
+    await confirmAndRestoreSettingsDefaults(
+      context: context,
+      title: S.of(context).resetStyle,
+      message: S.of(context).resetStyleConfirm,
+      confirmLabel: S.of(context).reset,
+      restore: ref.read(playerLyricSettingsProvider.notifier).reset,
+    );
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(playerLyricSettingsProvider);
     final notifier = ref.read(playerLyricSettingsProvider.notifier);
 
-    return Scaffold(
-      appBar: ScrollableAppBar(
-        title: Text(S.of(context).playerLyricStyle),
-      ),
+    return SettingsSubpageScaffold(
+      title: S.of(context).playerLyricStyle,
+      onRestoreDefaults: () => _resetToDefault(context, ref),
+      restoreDefaultsTooltip: S.of(context).restoreDefaultStyle,
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -98,14 +107,6 @@ class PlayerLyricStyleScreen extends ConsumerWidget {
                 onChanged: notifier.updateFullLineHeight,
               ),
             ],
-          ),
-          const SizedBox(height: 32),
-          Center(
-            child: TextButton.icon(
-              onPressed: () => notifier.reset(),
-              icon: const Icon(Icons.restore),
-              label: Text(S.of(context).restoreDefaultSettings),
-            ),
           ),
         ],
       ),

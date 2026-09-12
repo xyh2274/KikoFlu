@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../models/history_record.dart';
 import '../models/download_task.dart';
 import '../providers/auth_provider.dart';
+import '../providers/audio_provider.dart';
 import '../providers/history_provider.dart';
 import '../services/audio_player_service.dart';
 import '../services/download_service.dart';
@@ -14,9 +15,14 @@ import '../services/audio_track_queue_builder.dart';
 import '../screens/work_detail_screen.dart';
 import '../services/storage_service.dart';
 import '../utils/string_utils.dart';
+import '../utils/work_cover_prefetch.dart';
 import '../providers/lyric_provider.dart';
+import '../providers/work_card_display_provider.dart';
+import '../utils/age_rating.dart';
 import '../../l10n/app_localizations.dart';
 import 'privacy_blur_cover.dart';
+import 'age_rating_chip.dart';
+import 'confirmation_dialog.dart';
 
 final _log = LogService.instance;
 
@@ -36,8 +42,16 @@ class HistoryWorkCard extends ConsumerWidget {
     final host = authState.host ?? '';
     final token = authState.token ?? '';
     final work = record.work;
+    final showAgeRating = ref.watch(workCardDisplayProvider).showAgeRating;
 
     final httpHeaders = StorageService.serverCookieHeaders;
+    final initialCoverImageProvider = host.isEmpty
+        ? null
+        : createWorkCoverImageProvider(
+            work: work,
+            host: host,
+            token: token,
+          );
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -50,31 +64,25 @@ class HistoryWorkCard extends ConsumerWidget {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => WorkDetailScreen(work: work),
+              builder: (context) => WorkDetailScreen(
+                work: work,
+                initialCoverImageProvider: initialCoverImageProvider,
+              ),
             ),
           );
         },
         onLongPress: () {
-          showDialog(
+          showCommonConfirmationDialog(
             context: context,
-            builder: (context) => AlertDialog(
-              title: Text(S.of(context).deleteRecord),
-              content: Text(S.of(context).deletePlayRecordConfirm(work.title)),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(S.of(context).cancel),
-                ),
-                TextButton(
-                  onPressed: () {
-                    ref.read(historyProvider.notifier).remove(work.id);
-                    Navigator.pop(context);
-                  },
-                  child: Text(S.of(context).delete),
-                ),
-              ],
-            ),
-          );
+            title: S.of(context).deleteRecord,
+            content: Text(S.of(context).deletePlayRecordConfirm(work.title)),
+            confirmLabel: S.of(context).delete,
+            variant: ConfirmationDialogVariant.danger,
+          ).then((confirmed) {
+            if (confirmed) {
+              ref.read(historyProvider.notifier).remove(work.id);
+            }
+          });
         },
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -128,6 +136,12 @@ class HistoryWorkCard extends ConsumerWidget {
                       ),
                     ),
                   ),
+                  if (showAgeRating && AgeRatingFormatter.hasValue(work.age))
+                    Positioned(
+                      top: 8,
+                      right: 8,
+                      child: AgeRatingChip(age: work.age, compact: true),
+                    ),
                   // Play Button
                   if (record.lastTrack != null)
                     Positioned(
@@ -262,7 +276,10 @@ class HistoryWorkCard extends ConsumerWidget {
     List<dynamic> allFiles = [];
     try {
       allFiles = await apiService.getWorkTracks(work.id);
-      ref.read(fileListControllerProvider.notifier).updateFiles(allFiles);
+      ref.read(fileListControllerProvider.notifier).updateFiles(
+            allFiles,
+            workId: work.id,
+          );
     } catch (e) {
       _log.captureOutput('Failed to update file list: $e');
 
@@ -282,7 +299,10 @@ class HistoryWorkCard extends ConsumerWidget {
 
           if (downloadedFiles.isNotEmpty) {
             allFiles = downloadedFiles;
-            ref.read(fileListControllerProvider.notifier).updateFiles(allFiles);
+            ref.read(fileListControllerProvider.notifier).updateFiles(
+                  allFiles,
+                  workId: work.id,
+                );
           }
         }
       } catch (e2) {
@@ -298,6 +318,7 @@ class HistoryWorkCard extends ConsumerWidget {
           await AudioPlayerService.instance
               .seek(Duration(milliseconds: record.lastPositionMs));
           await AudioPlayerService.instance.play();
+          ref.read(miniPlayerVisibilityProvider.notifier).show();
           ref.read(historyProvider.notifier).addOrUpdate(work);
         } catch (e) {
           _log.captureOutput('Failed to resume playback: $e');
@@ -446,6 +467,7 @@ class HistoryWorkCard extends ConsumerWidget {
         await AudioPlayerService.instance
             .seek(Duration(milliseconds: record.lastPositionMs));
         await AudioPlayerService.instance.play();
+        ref.read(miniPlayerVisibilityProvider.notifier).show();
         ref.read(historyProvider.notifier).addOrUpdate(work);
       } catch (e) {
         _log.captureOutput('Failed to resume playback: $e');

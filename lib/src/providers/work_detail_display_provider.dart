@@ -11,6 +11,7 @@ class WorkDetailDisplaySettings {
   final bool showReleaseDate;
   final bool showTranslateButton;
   final bool showSubtitleTag;
+  final bool showAgeRating;
   final bool showRecommendations;
 
   const WorkDetailDisplaySettings({
@@ -22,6 +23,7 @@ class WorkDetailDisplaySettings {
     this.showReleaseDate = true,
     this.showTranslateButton = true,
     this.showSubtitleTag = true,
+    this.showAgeRating = false,
     this.showRecommendations = true,
   });
 
@@ -34,6 +36,7 @@ class WorkDetailDisplaySettings {
     bool? showReleaseDate,
     bool? showTranslateButton,
     bool? showSubtitleTag,
+    bool? showAgeRating,
     bool? showRecommendations,
   }) {
     return WorkDetailDisplaySettings(
@@ -45,6 +48,7 @@ class WorkDetailDisplaySettings {
       showReleaseDate: showReleaseDate ?? this.showReleaseDate,
       showTranslateButton: showTranslateButton ?? this.showTranslateButton,
       showSubtitleTag: showSubtitleTag ?? this.showSubtitleTag,
+      showAgeRating: showAgeRating ?? this.showAgeRating,
       showRecommendations: showRecommendations ?? this.showRecommendations,
     );
   }
@@ -62,7 +66,9 @@ class WorkDetailDisplayNotifier
   static const String _keyReleaseDate = '${_keyPrefix}release_date';
   static const String _keyTranslateButton = '${_keyPrefix}translate_button';
   static const String _keySubtitleTag = '${_keyPrefix}subtitle_tag';
+  static const String keyAgeRating = '${_keyPrefix}age_rating';
   static const String _keyRecommendations = '${_keyPrefix}recommendations';
+  bool _changedLocally = false;
 
   WorkDetailDisplayNotifier() : super(const WorkDetailDisplaySettings()) {
     _loadSettings();
@@ -71,6 +77,7 @@ class WorkDetailDisplayNotifier
   Future<void> _loadSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (!mounted || _changedLocally) return;
       state = WorkDetailDisplaySettings(
         showRating: prefs.getBool(_keyRating) ?? true,
         showPrice: prefs.getBool(_keyPrice) ?? true,
@@ -80,6 +87,7 @@ class WorkDetailDisplayNotifier
         showReleaseDate: prefs.getBool(_keyReleaseDate) ?? true,
         showTranslateButton: prefs.getBool(_keyTranslateButton) ?? true,
         showSubtitleTag: prefs.getBool(_keySubtitleTag) ?? true,
+        showAgeRating: prefs.getBool(keyAgeRating) ?? false,
         showRecommendations: prefs.getBool(_keyRecommendations) ?? true,
       );
     } catch (e) {
@@ -88,48 +96,69 @@ class WorkDetailDisplayNotifier
   }
 
   Future<void> toggleRating() async {
-    state = state.copyWith(showRating: !state.showRating);
+    _applyLocalChange(state.copyWith(showRating: !state.showRating));
     await _saveSettings();
   }
 
   Future<void> togglePrice() async {
-    state = state.copyWith(showPrice: !state.showPrice);
+    _applyLocalChange(state.copyWith(showPrice: !state.showPrice));
     await _saveSettings();
   }
 
   Future<void> toggleDuration() async {
-    state = state.copyWith(showDuration: !state.showDuration);
+    _applyLocalChange(state.copyWith(showDuration: !state.showDuration));
     await _saveSettings();
   }
 
   Future<void> toggleSales() async {
-    state = state.copyWith(showSales: !state.showSales);
+    _applyLocalChange(state.copyWith(showSales: !state.showSales));
     await _saveSettings();
   }
 
   Future<void> toggleExternalLinks() async {
-    state = state.copyWith(showExternalLinks: !state.showExternalLinks);
+    _applyLocalChange(
+      state.copyWith(showExternalLinks: !state.showExternalLinks),
+    );
     await _saveSettings();
   }
 
   Future<void> toggleReleaseDate() async {
-    state = state.copyWith(showReleaseDate: !state.showReleaseDate);
+    _applyLocalChange(state.copyWith(showReleaseDate: !state.showReleaseDate));
     await _saveSettings();
   }
 
   Future<void> toggleTranslateButton() async {
-    state = state.copyWith(showTranslateButton: !state.showTranslateButton);
+    _applyLocalChange(
+      state.copyWith(showTranslateButton: !state.showTranslateButton),
+    );
     await _saveSettings();
   }
 
   Future<void> toggleSubtitleTag() async {
-    state = state.copyWith(showSubtitleTag: !state.showSubtitleTag);
+    _applyLocalChange(state.copyWith(showSubtitleTag: !state.showSubtitleTag));
+    await _saveSettings();
+  }
+
+  Future<void> toggleAgeRating() async {
+    _applyLocalChange(state.copyWith(showAgeRating: !state.showAgeRating));
     await _saveSettings();
   }
 
   Future<void> toggleRecommendations() async {
-    state = state.copyWith(showRecommendations: !state.showRecommendations);
+    _applyLocalChange(
+      state.copyWith(showRecommendations: !state.showRecommendations),
+    );
     await _saveSettings();
+  }
+
+  Future<void> resetToDefault() async {
+    _applyLocalChange(const WorkDetailDisplaySettings());
+    await _saveSettings();
+  }
+
+  void _applyLocalChange(WorkDetailDisplaySettings nextState) {
+    _changedLocally = true;
+    state = nextState;
   }
 
   Future<void> _saveSettings() async {
@@ -143,6 +172,7 @@ class WorkDetailDisplayNotifier
       await prefs.setBool(_keyReleaseDate, state.showReleaseDate);
       await prefs.setBool(_keyTranslateButton, state.showTranslateButton);
       await prefs.setBool(_keySubtitleTag, state.showSubtitleTag);
+      await prefs.setBool(keyAgeRating, state.showAgeRating);
       await prefs.setBool(_keyRecommendations, state.showRecommendations);
     } catch (e) {
       // 保存失败时静默处理

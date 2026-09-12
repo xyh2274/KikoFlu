@@ -3,20 +3,27 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../providers/playlist_detail_provider.dart';
 import '../providers/auth_provider.dart';
+import '../providers/playlist_display_provider.dart';
+import '../providers/work_card_display_provider.dart';
 import '../models/playlist.dart';
 import '../models/work.dart';
 import '../services/storage_service.dart';
-import '../widgets/pagination_bar.dart';
 import '../widgets/playlist_add_works_dialog.dart';
 import '../widgets/playlist_edit_dialog.dart';
 import '../widgets/playlist_metadata_section.dart';
 import '../widgets/scrollable_appbar.dart';
 import '../utils/snackbar_util.dart';
 import '../screens/work_detail_screen.dart';
-import '../widgets/overscroll_next_page_detector.dart';
 import '../widgets/privacy_blur_cover.dart';
+import '../widgets/enhanced_work_card.dart';
+import '../widgets/virtualized_sliver_collection.dart';
+import '../utils/responsive_grid_helper.dart';
+import '../utils/work_cover_prefetch.dart';
 import '../utils/scroll_optimization.dart';
+import '../utils/age_rating.dart';
 import '../../l10n/app_localizations.dart';
+import '../widgets/confirmation_dialog.dart';
+import '../widgets/age_rating_chip.dart';
 
 class PlaylistDetailScreen extends ConsumerStatefulWidget {
   final String playlistId;
@@ -51,16 +58,6 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen> {
     super.dispose();
   }
 
-  void _scrollToTop() {
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        0,
-        duration: const Duration(milliseconds: 500),
-        curve: Curves.easeInOut,
-      );
-    }
-  }
-
   /// 显示删除播放列表确认对话框
   Future<void> _showDeleteConfirmDialog() async {
     final state = ref.read(playlistDetailProvider(widget.playlistId));
@@ -77,32 +74,18 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen> {
       return;
     }
 
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(isOwner
-            ? S.of(context).deletePlaylist
-            : S.of(context).unfavoritePlaylist),
-        content: Text(
-          isOwner
-              ? S.of(context).deletePlaylistConfirm
-              : S.of(context).unfavoritePlaylistConfirm(playlist.displayName),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: Text(S.of(context).cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.error,
-            ),
-            child:
-                Text(isOwner ? S.of(context).delete : S.of(context).unfavorite),
-          ),
-        ],
+      title: isOwner
+          ? S.of(context).deletePlaylist
+          : S.of(context).unfavoritePlaylist,
+      content: Text(
+        isOwner
+            ? S.of(context).deletePlaylistConfirm
+            : S.of(context).unfavoritePlaylistConfirm(playlist.displayName),
       ),
+      confirmLabel: isOwner ? S.of(context).delete : S.of(context).unfavorite,
+      variant: ConfirmationDialogVariant.danger,
     );
 
     if (confirmed == true) {
@@ -228,25 +211,12 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen> {
 
   /// 显示移除作品确认对话框
   Future<void> _showRemoveWorkConfirmDialog(Work work) async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(S.of(context).removeWork),
-        content: Text(S.of(context).removeWorkConfirm(work.title)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: Text(S.of(context).cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.error,
-            ),
-            child: Text(S.of(context).remove),
-          ),
-        ],
-      ),
+      title: S.of(context).removeWork,
+      content: Text(S.of(context).removeWorkConfirm(work.title)),
+      confirmLabel: S.of(context).remove,
+      variant: ConfirmationDialogVariant.danger,
     );
 
     if (confirmed == true) {
@@ -352,7 +322,6 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen> {
   }
 
   Widget _buildBody(PlaylistDetailState state) {
-    // 错误状态
     if (state.error != null && state.metadata == null) {
       return Center(
         child: Column(
@@ -389,176 +358,209 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen> {
       );
     }
 
-    // 加载中且无数据
     if (state.isLoading && state.metadata == null) {
-      return const Center(
-        child: CircularProgressIndicator(),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
-    // 空状态
-    if (state.works.isEmpty && !state.isLoading) {
-      return RefreshIndicator(
-        onRefresh: () async => ref
-            .read(playlistDetailProvider(widget.playlistId).notifier)
-            .refresh(),
-        child: CustomScrollView(
-          slivers: [
-            if (state.metadata != null) _buildMetadataSection(state.metadata!),
-            SliverFillRemaining(
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.music_note,
-                      size: 64,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      S.of(context).noWorks,
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      S.of(context).playlistNoWorksDescription,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color:
-                                Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+    final auth = ref.watch(authProvider.select(
+      (value) => (
+        host: value.host ?? '',
+        token: value.token ?? '',
+        userName: value.currentUser?.name ?? '',
+      ),
+    ));
+    final notifier =
+        ref.read(playlistDetailProvider(widget.playlistId).notifier);
+    final isOwner = state.metadata?.userName == auth.userName;
+    final layoutType = ref.watch(playlistDisplayProvider);
+    final isMasonry = layoutType == PlaylistLayoutType.masonry;
+    final isLandscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
+    final spacing = isLandscape ? 24.0 : 8.0;
+    final crossAxisCount = isMasonry
+        ? ref.watch(workCardDisplayProvider).applyCardSize(
+              ResponsiveGridHelper.getBigGridCrossAxisCount(context),
+            )
+        : 1;
+    final contentPadding = isMasonry ? spacing : 8.0;
+
+    return VirtualizedSliverCollection(
+      controller: _scrollController,
+      items: state.works,
+      itemId: (work) => work.id,
+      layout: isMasonry
+          ? VirtualizedCollectionLayout.masonry
+          : VirtualizedCollectionLayout.list,
+      masonryCrossAxisCount: isMasonry ? crossAxisCount : null,
+      masonryMainAxisSpacing: spacing,
+      masonryCrossAxisSpacing: spacing,
+      padding: EdgeInsets.all(contentPadding),
+      physics: ScrollOptimization.physics,
+      sliversBefore: [
+        if (state.metadata != null)
+          _buildMetadataSection(
+            state.metadata!,
+            auth.userName,
+            isMasonry: isMasonry,
+          ),
+      ],
+      isInitialLoading:
+          state.isLoading && state.works.isEmpty && state.metadata == null,
+      isRefreshing: false,
+      isLoadingMore: state.isLoadingMore,
+      hasMore: state.hasMore,
+      error: null,
+      loadMoreError: null,
+      onRefresh: notifier.refresh,
+      pagination: VirtualizedPagination(
+        currentPage: state.currentPage,
+        pageSize: state.pageSize,
+        totalCount: state.totalCount,
+        hasMore: state.hasMore,
+        isLoading: state.isLoading || state.isRefreshing,
+        onPreviousPage: notifier.previousPage,
+        onNextPage: notifier.nextPage,
+        onGoToPage: notifier.goToPage,
+        nextPageOnOverscroll: true,
+        scrollDuration: const Duration(milliseconds: 500),
+        scrollCurve: Curves.easeInOut,
+        padding: EdgeInsets.fromLTRB(
+          contentPadding,
+          contentPadding,
+          contentPadding,
+          24,
         ),
-      );
-    }
-
-    return RefreshIndicator(
-      onRefresh: () async => ref
-          .read(playlistDetailProvider(widget.playlistId).notifier)
-          .refresh(),
-      child: OverscrollNextPageDetector(
-        hasNextPage: state.hasMore,
-        isLoading: state.isLoading,
-        onNextPage: () async {
-          await ref
-              .read(playlistDetailProvider(widget.playlistId).notifier)
-              .nextPage();
-          // 等待一帧后滚动到顶部，确保内容已加载
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _scrollToTop();
-          });
-        },
-        child: CustomScrollView(
-          controller: _scrollController,
-          cacheExtent: ScrollOptimization.cacheExtent,
-          physics: ScrollOptimization.physics,
-          slivers: [
-            // 元数据信息
-            if (state.metadata != null) _buildMetadataSection(state.metadata!),
-
-            // 作品列表
-            SliverPadding(
-              padding: const EdgeInsets.all(8),
-              sliver: SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final work = state.works[index];
-                    final authState = ref.watch(authProvider);
-                    final currentUserName = authState.currentUser?.name ?? '';
-                    final isOwner = state.metadata?.userName == currentUserName;
-
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 2,
-                      ),
-                      child: _buildPlaylistWorkCard(work, isOwner),
-                    );
-                  },
-                  childCount: state.works.length,
-                ),
-              ),
+      ),
+      onRetry: notifier.refresh,
+      onPrefetch: (works) => prefetchWorkCovers(
+        context,
+        works,
+        host: auth.host,
+        token: auth.token,
+        crossAxisCount: isMasonry ? crossAxisCount : 1,
+        isListCard: !isMasonry,
+      ),
+      emptyBuilder: (context) => Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.music_note,
+              size: 64,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
-
-            // 分页控件
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 8, 24),
-              sliver: SliverToBoxAdapter(
-                child: PaginationBar(
-                  currentPage: state.currentPage,
-                  totalCount: state.totalCount,
-                  pageSize: state.pageSize,
-                  hasMore: state.hasMore,
-                  isLoading: state.isLoading,
-                  onPreviousPage: () {
-                    ref
-                        .read(
-                            playlistDetailProvider(widget.playlistId).notifier)
-                        .previousPage();
-                    _scrollToTop();
-                  },
-                  onNextPage: () {
-                    ref
-                        .read(
-                            playlistDetailProvider(widget.playlistId).notifier)
-                        .nextPage();
-                    _scrollToTop();
-                  },
-                  onGoToPage: (page) {
-                    ref
-                        .read(
-                            playlistDetailProvider(widget.playlistId).notifier)
-                        .goToPage(page);
-                    _scrollToTop();
-                  },
-                ),
-              ),
+            const SizedBox(height: 16),
+            Text(
+              S.of(context).noWorks,
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              S.of(context).playlistNoWorksDescription,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+              textAlign: TextAlign.center,
             ),
           ],
         ),
       ),
+      itemBuilder: (context, work, index) => isMasonry
+          ? _buildPlaylistWorkCardMasonry(
+              work,
+              isOwner,
+              crossAxisCount: crossAxisCount,
+            )
+          : Padding(
+              key: ValueKey(work.id),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              child: _buildPlaylistWorkCard(
+                work,
+                isOwner,
+                auth.host,
+                auth.token,
+              ),
+            ),
     );
   }
 
-  Widget _buildMetadataSection(Playlist metadata) {
+  Widget _buildMetadataSection(
+    Playlist metadata,
+    String currentUserName, {
+    required bool isMasonry,
+  }) {
     return SliverToBoxAdapter(
-      child: Builder(
-        builder: (context) {
-          final authState = ref.watch(authProvider);
-          final currentUserName = authState.currentUser?.name ?? '';
+      child: PlaylistMetadataSection(
+        metadata: metadata,
+        isOwner: metadata.userName == currentUserName,
+        isMasonry: isMasonry,
+        onToggleLayout: () =>
+            ref.read(playlistDisplayProvider.notifier).toggleLayout(),
+        onEdit: () => _showEditDialog(metadata),
+        onDelete: _showDeleteConfirmDialog,
+      ),
+    );
+  }
 
-          return PlaylistMetadataSection(
-            metadata: metadata,
-            isOwner: metadata.userName == currentUserName,
-            onEdit: () => _showEditDialog(metadata),
-            onDelete: _showDeleteConfirmDialog,
-          );
-        },
+  Widget _buildPlaylistWorkCardMasonry(
+    Work work,
+    bool isOwner, {
+    required int crossAxisCount,
+  }) {
+    return EnhancedWorkCard(
+      key: ValueKey(work.id),
+      work: work,
+      crossAxisCount: crossAxisCount,
+      isListLayout: false,
+      trailingAction: isOwner ? _buildPlaylistRemoveAction(work) : null,
+    );
+  }
+
+  Widget _buildPlaylistRemoveAction(Work work) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return IconButton(
+      icon: const Icon(Icons.remove_circle_outline, size: 17),
+      tooltip: S.of(context).removeFromPlaylist,
+      onPressed: () => _showRemoveWorkConfirmDialog(work),
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+      visualDensity: VisualDensity.compact,
+      style: IconButton.styleFrom(
+        foregroundColor: colorScheme.error,
+        backgroundColor: colorScheme.errorContainer.withValues(alpha: 0.72),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
     );
   }
 
   // 扁平播放列表风格的作品卡片
-  Widget _buildPlaylistWorkCard(Work work, bool isOwner) {
-    final authState = ref.watch(authProvider);
-    final host = authState.host ?? '';
-    final token = authState.token ?? '';
+  Widget _buildPlaylistWorkCard(
+    Work work,
+    bool isOwner,
+    String host,
+    String token,
+  ) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final displaySettings = ref.watch(workCardDisplayProvider);
 
     final httpHeaders = StorageService.serverCookieHeaders;
+    final initialCoverImageProvider = host.isEmpty
+        ? null
+        : createWorkCoverImageProvider(
+            work: work,
+            host: host,
+            token: token,
+          );
 
     return InkWell(
       onTap: () {
         Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (context) => WorkDetailScreen(work: work),
+            builder: (context) => WorkDetailScreen(
+              work: work,
+              initialCoverImageProvider: initialCoverImageProvider,
+            ),
           ),
         );
       },
@@ -647,6 +649,9 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen> {
                           fontWeight: FontWeight.w500,
                         ),
                       ),
+                      if (displaySettings.showAgeRating &&
+                          AgeRatingFormatter.hasValue(work.age))
+                        AgeRatingChip(age: work.age, compact: true),
                       if (work.name != null && work.name!.isNotEmpty)
                         Text(
                           work.name!,
@@ -699,13 +704,7 @@ class _PlaylistDetailScreenState extends ConsumerState<PlaylistDetailScreen> {
             // 移除按钮（仅作者可见）
             if (isOwner) ...[
               const SizedBox(width: 8),
-              IconButton(
-                icon: const Icon(Icons.remove_circle_outline, size: 20),
-                color: colorScheme.error,
-                visualDensity: VisualDensity.compact,
-                onPressed: () => _showRemoveWorkConfirmDialog(work),
-                tooltip: S.of(context).removeFromPlaylist,
-              ),
+              _buildPlaylistRemoveAction(work),
             ],
           ],
         ),

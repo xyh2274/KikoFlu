@@ -322,6 +322,11 @@ class SEn extends S {
   String get includeMode => 'Include';
 
   @override
+  String includeModeTapAgainHint(String searchType) {
+    return 'Include: $searchType (tap again to switch to exclude mode)';
+  }
+
+  @override
   String get noResults => 'No results';
 
   @override
@@ -388,6 +393,17 @@ class SEn extends S {
       'Locked - Long press floating lyrics to unlock';
 
   @override
+  String get floatingLyricClickThrough => 'Floating Lyric Click-Through';
+
+  @override
+  String get floatingLyricClickThroughEnabled =>
+      'Enabled - Floating lyrics ignore mouse input';
+
+  @override
+  String get floatingLyricClickThroughDisabled =>
+      'Disabled - Floating lyrics can be dragged';
+
+  @override
   String get floatingFPS => 'Show FPS';
 
   @override
@@ -448,11 +464,24 @@ class SEn extends S {
   String get uiSettingsSubtitle => 'Player, detail page, cards, etc.';
 
   @override
+  String get liquidGlassNavigation => 'Liquid Glass Navigation';
+
+  @override
+  String get liquidGlassNavigationDesc =>
+      'Glass navigation and mini player; enabled by default on Apple OS 26+.';
+
+  @override
+  String get fallbackGlassTransparency => 'Liquid Glass Transparency';
+
+  @override
+  String get fallbackGlassTransparencyDesc =>
+      'Adjust app-rendered glass transparency.';
+
+  @override
   String get preferenceSettings => 'Preference Settings';
 
   @override
-  String get preferenceSettingsSubtitle =>
-      'Translation source, blocking, audio preferences, etc.';
+  String get preferenceSettingsSubtitle => 'Translation, playback, and network';
 
   @override
   String get aboutTitle => 'About';
@@ -861,6 +890,13 @@ class SEn extends S {
   String get translationTargetLanguage => 'Target Language';
 
   @override
+  String get autoSaveTranslatedLyrics => 'Automatically save translated lyrics';
+
+  @override
+  String get autoSaveTranslatedLyricsDesc =>
+      'Save translations to the subtitle library; otherwise show them temporarily.';
+
+  @override
   String get selectTranslationTargetLanguage => 'Select target language:';
 
   @override
@@ -920,13 +956,47 @@ class SEn extends S {
   String get llmSettings => 'LLM Settings';
 
   @override
-  String get llmSettingsSubtitle => 'Configure API URL, Key, and model';
+  String get llmSettingsSubtitle => 'API URL, protocol, key, and model';
 
   @override
   String get audioFormatPreference => 'Audio Format Preference';
 
   @override
-  String get audioFormatSubtitle => 'Set audio format priority order';
+  String get audioFormatSubtitle => 'Audio format priority';
+
+  @override
+  String get audioTapPlaylistMode => 'Playlist Add Mode';
+
+  @override
+  String get selectAudioTapPlaylistMode =>
+      'Choose how tapping audio updates the playlist:';
+
+  @override
+  String get audioTapPlaylistModeReplace => 'Replace Mode';
+
+  @override
+  String get audioTapPlaylistModeReplaceDescription =>
+      'Replace the current playlist with every playable audio file in the tapped file\'s folder.';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectory => 'Append Mode';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectoryDescription =>
+      'Append every playable audio file in the tapped file\'s folder. Existing tracks are not duplicated.';
+
+  @override
+  String get audioTapPlaylistModeAppendSingle => 'Single-Audio Append Mode';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleDescription =>
+      'Append only the tapped audio file. Existing tracks are not duplicated.';
+
+  @override
+  String get audioTapPlaylistModeAppendChip => 'Append Mode';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleChip => 'Single-Audio Append Mode';
 
   @override
   String get preloadNextTitle => 'Preload Next Track';
@@ -969,36 +1039,49 @@ class SEn extends S {
   String get keepScreenAwake => 'Keep Screen Awake';
 
   @override
-  String get keepScreenAwakeDesc =>
-      'Keep the screen on while an audio track is active for easier subtitle reading.';
+  String get keepScreenAwakeDesc => 'Keep the screen on during playback';
 
   @override
   String get audioHaptics => 'Audio Haptics (Beta)';
 
   @override
   String get audioHapticsDesc =>
-      'Downloaded audio only, foreground only. Make the device vibrate with audio features. May increase battery use.';
+      'Vibrate with downloaded audio while the app is foregrounded';
 
   @override
   String get audioHapticsIntensity => 'Intensity';
+
+  @override
+  String get audioGain => 'Global Audio Gain';
+
+  @override
+  String get audioGainDesc =>
+      '0 dB is original audio; excessive boost may distort or damage hearing';
+
+  @override
+  String get audioGainAttenuationDesc =>
+      'Reduce all audio; 0 dB keeps the original level';
+
+  @override
+  String get audioGainPassthroughDesc =>
+      'Unavailable while audio passthrough is on';
 
   @override
   String get blockingSettings => 'Blocking Settings';
 
   @override
   String get blockingSettingsSubtitle =>
-      'Manage blocked tags, voice actors, and circles';
+      'Blocked tags, voice actors, and circles';
 
   @override
   String get audioPassthrough => 'Audio Passthrough (Beta)';
 
   @override
   String get audioPassthroughDescWindows =>
-      'Enable WASAPI exclusive mode for lossless output (restart required)';
+      'Use WASAPI exclusive output (restart required)';
 
   @override
-  String get audioPassthroughDescMac =>
-      'Enable CoreAudio exclusive mode for lossless output';
+  String get audioPassthroughDescMac => 'Use CoreAudio exclusive output';
 
   @override
   String get audioPassthroughDisableDesc => 'Disable audio passthrough mode';
@@ -1679,29 +1762,26 @@ class SEn extends S {
   String get surfaceColor => 'Surface';
 
   @override
-  String get playerButtonSettingsSubtitle =>
-      'Customize player control button order';
+  String get playerButtonSettingsSubtitle => 'Player button order';
 
   @override
-  String get playerLyricStyleSubtitle =>
-      'Customize subtitle style for mini and fullscreen player';
+  String get playerLyricStyleSubtitle => 'Mini and fullscreen lyric styles';
 
   @override
-  String get workDetailDisplaySubtitle =>
-      'Control info items on work detail page';
+  String get workDetailDisplaySubtitle => 'Detail page content';
 
   @override
-  String get workCardDisplaySubtitle => 'Control info items on work cards';
+  String get workCardDisplaySubtitle => 'Work card content';
 
   @override
-  String get myTabsDisplaySubtitle => 'Control tab display in My page';
+  String get myTabsDisplaySubtitle => 'Tabs shown on My';
 
   @override
   String get pageSizeSettings => 'Items Per Page';
 
   @override
   String pageSizeCurrent(int size) {
-    return 'Current: $size items/page';
+    return '$size items per page';
   }
 
   @override
@@ -1722,22 +1802,20 @@ class SEn extends S {
   String get autoSwitchedToLlm => 'Auto-switched to: LLM Translation';
 
   @override
-  String get translationDescGoogle =>
-      'Requires network access to Google services';
+  String get translationDescGoogle => 'Requires Google services';
 
   @override
-  String get translationDescYoudao => 'Works with default network';
+  String get translationDescYoudao => 'Uses the current network';
 
   @override
-  String get translationDescMicrosoft => 'Works with default network';
+  String get translationDescMicrosoft => 'Uses the current network';
 
   @override
-  String get translationDescLlm =>
-      'OpenAI-compatible API, requires manual API Key configuration';
+  String get translationDescLlm => 'Requires an OpenAI-compatible API';
 
   @override
   String get audioPassthroughDescAndroid =>
-      'Allow raw bitstream output (AC3/DTS) to external decoder. May take exclusive audio control.';
+      'Send raw AC3/DTS audio to an external decoder';
 
   @override
   String get permissionExplanation => 'Permission Explanation';
@@ -2183,7 +2261,7 @@ class SEn extends S {
 
   @override
   String get lyricTranslationConfirmMessage =>
-      'KikoFlu will translate the currently playing lyrics with your current translation settings. When finished, the translation is shown immediately and saved as a same-name .lrc file in the Saved subtitle library folder, overwriting any existing file. Switching tracks during translation discards this result.';
+      'Translate the currently playing lyrics and show the result immediately. When automatic saving is enabled, the same-name .lrc file in the subtitle library will be overwritten. Switching tracks during translation discards the result.';
 
   @override
   String get unlock => 'Unlock';
@@ -2198,23 +2276,7 @@ class SEn extends S {
   String get floatingSubtitle => 'Floating Subtitle';
 
   @override
-  String get appendMode => 'Append Mode';
-
-  @override
-  String get appendModeStatusOn => 'Append Mode: On';
-
-  @override
-  String get appendModeStatusOff => 'Append Mode: Off';
-
-  @override
   String get playlistEmpty => 'Playlist is empty';
-
-  @override
-  String get appendModeEnabled => 'Append Mode Enabled';
-
-  @override
-  String get appendModeHint =>
-      'Audio tapped next will be appended to the end of the current playlist instead of replacing it.\nDuplicate tracks won\'t be added.';
 
   @override
   String get gotIt => 'Got it';
@@ -2854,6 +2916,10 @@ class SEn extends S {
   String get restoreDefaultSettings => 'Restore Default Settings';
 
   @override
+  String get confirmRestoreDefaultSettings =>
+      'Are you sure you want to restore the default settings?';
+
+  @override
   String get guideInPrefix => 'In ';
 
   @override
@@ -3075,6 +3141,10 @@ class SEn extends S {
 
   @override
   String get savedToSubtitleLibrary => 'Saved to subtitle library';
+
+  @override
+  String get translatedLyricsNotSaved =>
+      'Translation complete; shown only during current playback.';
 
   @override
   String get saveToLocal => 'Save to Local';
@@ -3428,7 +3498,23 @@ class SEn extends S {
   String get apiEndpointUrl => 'API Endpoint URL';
 
   @override
-  String get openaiCompatibleEndpoint => 'OpenAI-compatible endpoint URL';
+  String get apiBaseUrl => 'API Base URL';
+
+  @override
+  String get apiProtocol => 'API Protocol';
+
+  @override
+  String get chatCompletionsProtocol => 'Chat Completions (/chat/completions)';
+
+  @override
+  String get responsesProtocol => 'Responses (/responses)';
+
+  @override
+  String get anthropicProtocol => 'Anthropic Messages (/messages)';
+
+  @override
+  String get openaiCompatibleEndpoint =>
+      'The selected protocol suffix is added automatically';
 
   @override
   String get pleaseEnterApiUrl => 'Please enter API endpoint URL';
@@ -3553,6 +3639,9 @@ class SEn extends S {
   String get showSubtitleTagOnCover => 'Show subtitle tag on cover image';
 
   @override
+  String get showAgeRatingOnDetail => 'Show age rating on work detail page';
+
+  @override
   String get recommendationsLabel => 'Related Recommendations';
 
   @override
@@ -3596,6 +3685,9 @@ class SEn extends S {
 
   @override
   String get showSubtitleTagOnCard => 'Show subtitle tag on work card';
+
+  @override
+  String get showAgeRatingOnCard => 'Show age rating on work card';
 
   @override
   String get showOnlineMarks => 'Show online marked works';
@@ -3706,4 +3798,66 @@ class SEn extends S {
 
   @override
   String get logEmpty => 'No logs yet';
+
+  @override
+  String get proxySettingsOptional => 'Proxy';
+
+  @override
+  String get loginAdvancedSettings => 'Advanced settings';
+
+  @override
+  String proxyEnabled(String address) {
+    return 'Enabled: $address';
+  }
+
+  @override
+  String get proxyAddressNotSet => 'Not set (direct connection)';
+
+  @override
+  String get proxyHttpDescription => 'Connect through an HTTP proxy';
+
+  @override
+  String get useProxy => 'Use proxy';
+
+  @override
+  String get proxyAddress => 'Proxy address';
+
+  @override
+  String get proxyAddressFormat =>
+      'Format: host:port, for example 127.0.0.1:7890';
+
+  @override
+  String get applyProxyAddress => 'Apply proxy address';
+
+  @override
+  String get invalidProxyAddress => 'Enter a valid HTTP proxy address and port';
+
+  @override
+  String get proxyModeDirect => 'Direct';
+
+  @override
+  String get proxyModeSystem => 'System proxy';
+
+  @override
+  String get proxyModeManual => 'Manual proxy';
+
+  @override
+  String get proxyModeDirectDescription => 'Connect without a proxy';
+
+  @override
+  String get proxyModeSystemDescription =>
+      'Use the operating system proxy settings';
+
+  @override
+  String get proxyModeManualDescription =>
+      'Use the HTTP proxy configured below';
+
+  @override
+  String get playlistDisplayFormat => 'Playlist layout';
+
+  @override
+  String get playlistDisplayFormatMasonry => 'Masonry';
+
+  @override
+  String get playlistDisplayFormatList => 'List';
 }

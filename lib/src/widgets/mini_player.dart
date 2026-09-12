@@ -1,23 +1,35 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:real_liquid_glass/real_liquid_glass.dart';
 
 import '../models/audio_track.dart';
 import '../providers/audio_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/lyric_provider.dart';
 import '../providers/player_lyric_style_provider.dart';
+import '../providers/settings_provider.dart';
 import '../screens/audio_player_screen.dart';
 import '../utils/local_file_url.dart';
 import 'privacy_blur_cover.dart';
 import 'volume_control.dart';
+import 'liquid_glass_layout.dart';
 
 class MiniPlayer extends ConsumerStatefulWidget {
   final bool enableArtworkHero;
 
-  const MiniPlayer({super.key, this.enableArtworkHero = true});
+  /// Replaces only the liquid-glass surface with an equal-height placeholder.
+  /// Playback and the Mini Player state remain active behind the modal route.
+  final bool suppressLiquidGlassSurface;
+
+  const MiniPlayer({
+    super.key,
+    this.enableArtworkHero = true,
+    this.suppressLiquidGlassSurface = false,
+  });
 
   @override
   ConsumerState<MiniPlayer> createState() => _MiniPlayerState();
@@ -40,24 +52,29 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
     final duration = ref.watch(durationProvider);
     final authState = ref.watch(authProvider);
     final isMiniPlayerVisible = ref.watch(miniPlayerVisibilityProvider);
+    final useLiquidGlass = ref.watch(liquidGlassNavigationProvider);
+    final fallbackGlassTransparency =
+        ref.watch(fallbackGlassTransparencyProvider);
 
     // 启用自动字幕加载器
     ref.watch(lyricAutoLoaderProvider);
 
-    return currentTrack.when(
+    final player = currentTrack.when(
       data: (track) {
-        // 当播放新音轨时（并且不是因为重建导致的检查），重新显示MiniPlayer
-        if (track != null && _lastTrackId != null && track.id != _lastTrackId) {
+        // A newly loaded track always re-opens a Mini Player that the user
+        // previously dismissed. Dismissal clears the queue asynchronously, so
+        // keeping the old id until the null event also avoids a re-show race.
+        if (track == null) {
+          _lastTrackId = null;
+        } else if (_lastTrackId != track.id) {
           _lastTrackId = track.id;
-          // 使用addPostFrameCallback确保在build完成后再更新状态
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              ref.read(miniPlayerVisibilityProvider.notifier).show();
-            }
-          });
-        } else if (track != null && _lastTrackId == null) {
-          // 首次加载或删除后，记录当前音轨但不改变可见性
-          _lastTrackId = track.id;
+          if (!isMiniPlayerVisible) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                ref.read(miniPlayerVisibilityProvider.notifier).show();
+              }
+            });
+          }
         }
 
         if (track == null || !isMiniPlayerVisible) {
@@ -103,11 +120,11 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
           direction: DismissDirection.down,
           background: Container(color: Colors.transparent),
           onDismissed: (direction) {
-            // Stop playback and hide the MiniPlayer
-            ref.read(audioPlayerControllerProvider.notifier).stop();
-            ref.read(miniPlayerVisibilityProvider.notifier).hide();
-            // Reset track ID to allow re-showing when a new track is played
-            _lastTrackId = null;
+            unawaited(
+              ref
+                  .read(audioPlayerControllerProvider.notifier)
+                  .dismissMiniPlayer(),
+            );
           },
           child: Consumer(
             builder: (context, ref, child) {
@@ -116,20 +133,25 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
               final hasLyrics = lyricState.lyrics.isNotEmpty;
               final shouldShowLyric =
                   isPlaying && hasLyrics && currentLyric != null;
+              final playerHeight = shouldShowLyric ? 88.0 : 72.0;
 
-              return Container(
-                height: shouldShowLyric ? 88 : 72,
+              final playerContent = Container(
+                height: playerHeight,
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surface,
-                  border: Border(
-                    top: BorderSide(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .outline
-                          .withValues(alpha: 0.2),
-                      width: 1,
-                    ),
-                  ),
+                  color: useLiquidGlass
+                      ? Colors.transparent
+                      : Theme.of(context).colorScheme.surface,
+                  border: useLiquidGlass
+                      ? null
+                      : Border(
+                          top: BorderSide(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .outline
+                                .withValues(alpha: 0.2),
+                            width: 1,
+                          ),
+                        ),
                 ),
                 child: Column(
                   children: [
@@ -467,6 +489,38 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
                   ],
                 ),
               );
+
+              if (!useLiquidGlass) return playerContent;
+              if (widget.suppressLiquidGlassSurface) {
+                return SizedBox(
+                  height: playerHeight + LiquidGlassLayout.verticalPadding * 2,
+                );
+              }
+
+              return Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: LiquidGlassLayout.horizontalPadding,
+                  vertical: LiquidGlassLayout.verticalPadding,
+                ),
+                child: AnimatedSize(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.bottomCenter,
+                  child: LiquidGlassContainer(
+                    shape: const LiquidGlassShape.roundedRectangle(
+                      LiquidGlassLayout.cornerRadius,
+                    ),
+                    style: LiquidGlassStyle.regular,
+                    fallbackIntensity: fallbackGlassTransparency,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(
+                        LiquidGlassLayout.cornerRadius,
+                      ),
+                      child: playerContent,
+                    ),
+                  ),
+                ),
+              );
             },
           ),
         );
@@ -474,6 +528,8 @@ class _MiniPlayerState extends ConsumerState<MiniPlayer> {
       loading: () => const SizedBox.shrink(),
       error: (error, stack) => const SizedBox.shrink(),
     );
+
+    return player;
   }
 
   Widget _buildArtwork(

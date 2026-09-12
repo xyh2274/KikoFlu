@@ -38,12 +38,38 @@ import 'translation_toggle_button.dart';
 
 final _log = LogService.instance;
 
+class FileExplorerController {
+  _FileExplorerWidgetState? _state;
+
+  Future<void> refresh({bool forceRefresh = false}) async {
+    final state = _state;
+    if (state == null) return;
+
+    await state._loadWorkTree(
+      forceRefresh: forceRefresh,
+      propagateError: true,
+    );
+  }
+
+  void _attach(_FileExplorerWidgetState state) {
+    _state = state;
+  }
+
+  void _detach(_FileExplorerWidgetState state) {
+    if (identical(_state, state)) {
+      _state = null;
+    }
+  }
+}
+
 class FileExplorerWidget extends ConsumerStatefulWidget {
   final Work work;
+  final FileExplorerController? controller;
 
   const FileExplorerWidget({
     super.key,
     required this.work,
+    this.controller,
   });
 
   @override
@@ -106,13 +132,24 @@ class _FileExplorerWidgetState extends ConsumerState<FileExplorerWidget> {
   @override
   void initState() {
     super.initState();
+    widget.controller?._attach(this);
     _loadWorkTree();
     // 监听下载任务变化
     _listenToDownloadTasks();
   }
 
   @override
+  void didUpdateWidget(covariant FileExplorerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      oldWidget.controller?._detach(this);
+      widget.controller?._attach(this);
+    }
+  }
+
+  @override
   void dispose() {
+    widget.controller?._detach(this);
     _loadGeneration++;
     _downloadScanGeneration++;
     _translationController.dispose();
@@ -138,16 +175,23 @@ class _FileExplorerWidgetState extends ConsumerState<FileExplorerWidget> {
     });
   }
 
-  Future<void> _loadWorkTree() async {
+  Future<void> _loadWorkTree({
+    bool forceRefresh = false,
+    bool propagateError = false,
+  }) async {
     final generation = ++_loadGeneration;
+    final preserveCurrentTree = forceRefresh && _rootFiles.isNotEmpty;
     setState(() {
-      _isLoading = true;
+      _isLoading = !preserveCurrentTree;
       _errorMessage = null;
     });
 
     try {
       final apiService = ref.read(kikoeruApiServiceProvider);
-      final files = await apiService.getWorkTracks(widget.work.id);
+      final files = await apiService.getWorkTracks(
+        widget.work.id,
+        forceRefresh: forceRefresh,
+      );
       if (!_isCurrentLoad(generation)) return;
 
       // 注意：不要在这里更新全局文件列表
@@ -172,9 +216,12 @@ class _FileExplorerWidgetState extends ConsumerState<FileExplorerWidget> {
     } catch (e) {
       if (!_isCurrentLoad(generation)) return;
       setState(() {
-        _errorMessage = S.of(context).loadFilesFailed(e.toString());
+        if (!preserveCurrentTree) {
+          _errorMessage = S.of(context).loadFilesFailed(e.toString());
+        }
         _isLoading = false;
       });
+      if (propagateError) rethrow;
     }
   }
 
@@ -266,7 +313,10 @@ class _FileExplorerWidgetState extends ConsumerState<FileExplorerWidget> {
       final allFiles = await apiService.getWorkTracks(widget.work.id);
 
       // 只在播放音频时更新全局文件列表，这样字幕才能正确关联
-      ref.read(fileListControllerProvider.notifier).updateFiles(allFiles);
+      ref.read(fileListControllerProvider.notifier).updateFiles(
+            allFiles,
+            workId: widget.work.id,
+          );
     } catch (e) {
       _log.captureOutput('获取完整文件树失败 $e');
       // 即使获取失败也继续播放，只是可能没有字幕
@@ -274,6 +324,9 @@ class _FileExplorerWidgetState extends ConsumerState<FileExplorerWidget> {
 
     if (!mounted) return;
 
+    final playlistMode =
+        await ref.read(audioTapPlaylistModeProvider.notifier).getMode();
+    if (!mounted) return;
     final plan = await _audioPlaybackPlanBuilder.build(
       fileTree: _rootFiles,
       parentPath: parentPath,
@@ -289,6 +342,7 @@ class _FileExplorerWidgetState extends ConsumerState<FileExplorerWidget> {
       work: widget.work,
       unknownTitle: l10n.unknown,
       artworkUrl: coverUrl,
+      playlistMode: playlistMode,
     );
 
     if (!mounted) return;
@@ -313,11 +367,22 @@ class _FileExplorerWidgetState extends ConsumerState<FileExplorerWidget> {
         _log.captureOutput('播放音频: $title');
         _log.captureOutput('播放队列包含 ${queue.tracks.length} 个文件');
 
-        ref.read(audioPlayerControllerProvider.notifier).playTracks(
-              queue.tracks,
-              startIndex: queue.startIndex,
-              work: widget.work,
+        try {
+          await ref.read(audioPlayerControllerProvider.notifier).playTracks(
+                queue.tracks,
+                startIndex: queue.startIndex,
+                work: widget.work,
+                playlistMode: playlistMode,
+              );
+        } catch (e) {
+          _log.captureOutput('播放音频失败: $e');
+          if (mounted) {
+            SnackBarUtil.showError(
+              context,
+              l10n.playbackFailed(e.toString()),
             );
+          }
+        }
     }
 
     // 注意：字幕会通过 lyricAutoLoaderProvider 自动加载

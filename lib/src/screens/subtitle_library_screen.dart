@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
@@ -20,10 +21,23 @@ import '../utils/file_icon_utils.dart';
 import '../utils/snackbar_util.dart';
 import '../utils/subtitle_library_display.dart';
 import '../../l10n/app_localizations.dart';
+import '../widgets/confirmation_dialog.dart';
+import '../widgets/common_input_dialog.dart';
+import '../widgets/responsive_dialog.dart';
+import '../widgets/floating_feed_toolbar.dart';
 
 /// 字幕库界面
 class SubtitleLibraryScreen extends ConsumerStatefulWidget {
-  const SubtitleLibraryScreen({super.key});
+  const SubtitleLibraryScreen({
+    super.key,
+    this.toolbarTop = 8,
+    this.collapsedToolbarTop,
+    this.primaryToolbarVisible,
+  });
+
+  final double toolbarTop;
+  final double? collapsedToolbarTop;
+  final ValueListenable<bool>? primaryToolbarVisible;
 
   @override
   ConsumerState<SubtitleLibraryScreen> createState() =>
@@ -125,23 +139,12 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
     final selectedPaths = _selectedPaths.toList();
     final totalCount = selectedPaths.length;
 
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(S.of(context).confirmDelete),
-        content: Text(S.of(context).deleteSelectedConfirm(totalCount)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(S.of(context).cancel),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: Text(S.of(context).delete),
-          ),
-        ],
-      ),
+      title: S.of(context).confirmDelete,
+      content: Text(S.of(context).deleteSelectedConfirm(totalCount)),
+      confirmLabel: S.of(context).delete,
+      variant: ConfirmationDialogVariant.danger,
     );
 
     if (confirmed != true) return;
@@ -353,45 +356,39 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
   }
 
   void _showImportOptions() {
-    showModalBottomSheet(
+    showBottomSheetMenu(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.insert_drive_file),
-              title: Text(S.of(context).importSubtitleFile),
-              subtitle: Text(S.of(context).supportedSubtitleFormats),
-              onTap: () {
-                Navigator.pop(context);
-                _importFile();
-              },
-            ),
-            // iOS 不支持文件夹选择器
-            if (!Platform.isIOS)
-              ListTile(
-                leading: const Icon(Icons.folder),
-                title: Text(S.of(context).importFolder),
-                subtitle: Text(S.of(context).importFolderDesc),
-                onTap: () {
-                  Navigator.pop(context);
-                  _importFolder();
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.archive),
-              title: Text(S.of(context).importArchive),
-              subtitle: Text(S.of(context).importArchiveDesc),
-              onTap: () {
-                Navigator.pop(context);
-                _importArchive();
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
+      children: [
+        ListTile(
+          leading: const Icon(Icons.insert_drive_file),
+          title: Text(S.of(context).importSubtitleFile),
+          subtitle: Text(S.of(context).supportedSubtitleFormats),
+          onTap: () {
+            Navigator.pop(context);
+            _importFile();
+          },
         ),
-      ),
+        // iOS 不支持文件夹选择器
+        if (!Platform.isIOS)
+          ListTile(
+            leading: const Icon(Icons.folder),
+            title: Text(S.of(context).importFolder),
+            subtitle: Text(S.of(context).importFolderDesc),
+            onTap: () {
+              Navigator.pop(context);
+              _importFolder();
+            },
+          ),
+        ListTile(
+          leading: const Icon(Icons.archive),
+          title: Text(S.of(context).importArchive),
+          subtitle: Text(S.of(context).importArchiveDesc),
+          onTap: () {
+            Navigator.pop(context);
+            _importArchive();
+          },
+        ),
+      ],
     );
   }
 
@@ -403,68 +400,62 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
   }
 
   void _showFileOptions(Map<String, dynamic> item, String path) {
-    showModalBottomSheet(
+    showBottomSheetMenu(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (item['type'] == 'text' &&
-                FileIconUtils.isLyricFile(item['title'] ?? ''))
-              ListTile(
-                leading: const Icon(Icons.subtitles, color: Colors.orange),
-                title: Text(S.of(context).loadAsSubtitle),
-                onTap: () {
-                  Navigator.pop(context);
-                  _loadLyricManually(item);
-                },
-              ),
-            if (item['type'] == 'text')
-              ListTile(
-                leading: const Icon(Icons.visibility),
-                title: Text(S.of(context).preview),
-                onTap: () {
-                  Navigator.pop(context);
-                  _previewFile(path);
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.open_in_new),
-              title: Text(S.of(context).open),
-              onTap: () {
-                Navigator.pop(context);
-                _openFile(path);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_move),
-              title: Text(S.of(context).moveTo),
-              onTap: () {
-                Navigator.pop(context);
-                _moveItem(item);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.edit),
-              title: Text(S.of(context).rename),
-              onTap: () {
-                Navigator.pop(context);
-                _renameItem(item);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title: Text(S.of(context).delete,
-                  style: const TextStyle(color: Colors.red)),
-              onTap: () {
-                Navigator.pop(context);
-                _deleteItem(item);
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
+      children: [
+        if (item['type'] == 'text' &&
+            FileIconUtils.isLyricFile(item['title'] ?? ''))
+          ListTile(
+            leading: const Icon(Icons.subtitles, color: Colors.orange),
+            title: Text(S.of(context).loadAsSubtitle),
+            onTap: () {
+              Navigator.pop(context);
+              _loadLyricManually(item);
+            },
+          ),
+        if (item['type'] == 'text')
+          ListTile(
+            leading: const Icon(Icons.visibility),
+            title: Text(S.of(context).preview),
+            onTap: () {
+              Navigator.pop(context);
+              _previewFile(path);
+            },
+          ),
+        ListTile(
+          leading: const Icon(Icons.open_in_new),
+          title: Text(S.of(context).open),
+          onTap: () {
+            Navigator.pop(context);
+            _openFile(path);
+          },
         ),
-      ),
+        ListTile(
+          leading: const Icon(Icons.drive_file_move),
+          title: Text(S.of(context).moveTo),
+          onTap: () {
+            Navigator.pop(context);
+            _moveItem(item);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.edit),
+          title: Text(S.of(context).rename),
+          onTap: () {
+            Navigator.pop(context);
+            _renameItem(item);
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.delete, color: Colors.red),
+          title: Text(S.of(context).delete,
+              style: const TextStyle(color: Colors.red)),
+          onTap: () {
+            Navigator.pop(context);
+            _deleteItem(item);
+          },
+        ),
+      ],
     );
   }
 
@@ -509,38 +500,26 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
   }
 
   Future<void> _renameItem(Map<String, dynamic> item) async {
-    final controller = TextEditingController(text: item['title']);
-
-    final newName = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(S.of(context).rename),
-        content: TextField(
-          controller: controller,
-          decoration: InputDecoration(
-            labelText: S.of(context).newName,
-            border: const OutlineInputBorder(),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(S.of(context).cancel),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: Text(S.of(context).confirm),
-          ),
-        ],
-      ),
+    final newName = await showCommonTextInputDialog(
+      context,
+      title: S.of(context).rename,
+      labelText: S.of(context).newName,
+      confirmLabel: S.of(context).confirm,
+      initialValue: item['title'] as String? ?? '',
+      icon: Icons.drive_file_rename_outline,
     );
 
-    if (newName == null || newName.isEmpty || newName == item['title']) {
+    final normalizedName = newName?.trim();
+    if (normalizedName == null ||
+        normalizedName.isEmpty ||
+        normalizedName == item['title']) {
       return;
     }
 
-    final success = await SubtitleLibraryService.rename(item['path'], newName);
+    final success = await SubtitleLibraryService.rename(
+      item['path'],
+      normalizedName,
+    );
 
     if (!mounted) return;
 
@@ -582,23 +561,12 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
         ? '${S.of(context).deleteItemConfirm(title)}\n\n${S.of(context).deleteFolderContentsWarning}'
         : S.of(context).deleteItemConfirm(title);
 
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(S.of(context).confirmDelete),
-        content: Text(content),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(S.of(context).cancel),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: Text(S.of(context).delete),
-          ),
-        ],
-      ),
+      title: S.of(context).confirmDelete,
+      content: Text(content),
+      confirmLabel: S.of(context).delete,
+      variant: ConfirmationDialogVariant.danger,
     );
 
     if (confirmed != true) return;
@@ -737,47 +705,9 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
           tooltip: S.of(context).importSubtitle,
           child: const Icon(Icons.add),
         ),
-        body: Column(
+        body: Stack(
           children: [
-            // 顶部工具栏
-            _buildTopBar(),
-
-            // 固定位置的返回上一级按钮
-            if (_currentPath != _rootPath &&
-                _currentPath.isNotEmpty &&
-                !_isSearching)
-              Material(
-                color: Theme.of(context).colorScheme.surface,
-                child: InkWell(
-                  onTap: _navigateUp,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12),
-                    decoration: BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(
-                          color: Theme.of(context)
-                              .dividerColor
-                              .withValues(alpha: 0.5),
-                        ),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.arrow_back, size: 20),
-                        const SizedBox(width: 16),
-                        Text(
-                          S.of(context).back,
-                          style: Theme.of(context).textTheme.bodyLarge,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-
-            // 内容区域
-            Expanded(
+            Positioned.fill(
               child: SubtitleLibraryContentView(
                 isLoading: _isLoading,
                 empty: _files.isEmpty,
@@ -790,6 +720,10 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
                   selectedPaths: _selectedPaths,
                   selectionMode: _isSelectionMode,
                   recursive: _isSearching,
+                  header: Padding(
+                    padding: EdgeInsets.only(top: widget.toolbarTop + 60),
+                    child: _buildBreadcrumbs(),
+                  ),
                   onRefresh: () => _loadFiles(forceRefresh: true),
                   onSelectionToggle: _toggleItemSelection,
                   onFolderTap: _navigateTo,
@@ -799,6 +733,67 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
                 ),
               ),
             ),
+            if (widget.primaryToolbarVisible == null)
+              Positioned(
+                top: widget.toolbarTop,
+                left: FloatingToolbarLayout.horizontalPadding(context),
+                right: FloatingToolbarLayout.horizontalPadding(context),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: _buildPrimaryToolbar(),
+                      ),
+                    ),
+                    _buildSecondaryToolbar(),
+                  ],
+                ),
+              )
+            else
+              FloatingToolbarPositionFollower(
+                primaryToolbarVisible: widget.primaryToolbarVisible!,
+                visibleTop: widget.toolbarTop,
+                hiddenTop: widget.collapsedToolbarTop ?? widget.toolbarTop,
+                left: FloatingToolbarLayout.horizontalPadding(context),
+                right: FloatingToolbarLayout.horizontalPadding(context),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: _buildPrimaryToolbar(),
+                      ),
+                    ),
+                    _buildSecondaryToolbar(),
+                  ],
+                ),
+              ),
+            if (_rootPath != null && _currentPath == _rootPath)
+              Positioned(
+                left: 16,
+                bottom: MediaQuery.paddingOf(context).bottom + 12,
+                child: IgnorePointer(
+                  child: Text(
+                    _stats == null
+                        ? ''
+                        : S.of(context).nFilesWithSize(
+                              _stats!.totalFiles,
+                              _stats!.sizeFormatted,
+                            ),
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant
+                              .withValues(alpha: 0.8),
+                        ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -862,7 +857,7 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
     );
   }
 
-  Widget _buildTopBar() {
+  SubtitleLibraryTopBar _buildTopBar() {
     return SubtitleLibraryTopBar(
       isSelectionMode: _isSelectionMode,
       isSearching: _isSearching,
@@ -907,6 +902,148 @@ class _SubtitleLibraryScreenState extends ConsumerState<SubtitleLibraryScreen> {
       onStartSelection: _toggleSelectionMode,
       onShowGuide: _showLibraryInfoDialog,
       onNavigateTo: _navigateTo,
+    );
+  }
+
+  Widget _buildBreadcrumbs() {
+    final topBar = _buildTopBar();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: Row(
+        children: [
+          const Icon(Icons.folder_open, size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(children: topBar.buildBreadcrumbs(context)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPrimaryToolbar() {
+    if (_isSelectionMode) {
+      return FloatingToolbarSurface(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FloatingToolbarIconButton(
+              icon: Icons.close,
+              tooltip: S.of(context).exitSelection,
+              onPressed: _toggleSelectionMode,
+            ),
+            FloatingToolbarIconButton(
+              icon: _selectedPaths.isEmpty ? Icons.select_all : Icons.deselect,
+              tooltip: _selectedPaths.isEmpty
+                  ? S.of(context).selectAll
+                  : S.of(context).deselectAll,
+              onPressed: _selectedPaths.isEmpty ? _selectAll : _deselectAll,
+            ),
+            if (_selectedPaths.isNotEmpty)
+              FloatingToolbarIconButton(
+                icon: Icons.delete,
+                tooltip: S.of(context).delete,
+                onPressed: _deleteSelectedItems,
+              ),
+          ],
+        ),
+      );
+    }
+
+    if (_isSearching) {
+      return FloatingToolbarSurface(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FloatingToolbarIconButton(
+              icon: Icons.arrow_back,
+              tooltip: S.of(context).close,
+              onPressed: () {
+                setState(() {
+                  _isSearching = false;
+                  _searchQuery = '';
+                  _searchController.clear();
+                });
+              },
+            ),
+            SizedBox(
+              width: 160,
+              child: TextField(
+                controller: _searchController,
+                autofocus: true,
+                onChanged: (value) => setState(() => _searchQuery = value),
+                decoration: InputDecoration(
+                  hintText: S.of(context).searchSubtitles,
+                  border: InputBorder.none,
+                  isDense: true,
+                  suffixIcon: _searchQuery.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.clear, size: 18),
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _searchQuery = '');
+                          },
+                        ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final canNavigateUp = _rootPath != null && _currentPath != _rootPath;
+    return FloatingToolbarSurface(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingToolbarIconButton(
+            icon: Icons.arrow_back,
+            tooltip: S.of(context).back,
+            onPressed: canNavigateUp ? _navigateUp : null,
+          ),
+          FloatingToolbarIconButton(
+            icon: Icons.checklist,
+            tooltip: S.of(context).select,
+            onPressed: _toggleSelectionMode,
+          ),
+          FloatingToolbarIconButton(
+            icon: Icons.search,
+            tooltip: S.of(context).search,
+            onPressed: () => setState(() => _isSearching = true),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSecondaryToolbar() {
+    return FloatingToolbarSurface(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingToolbarIconButton(
+            icon: Icons.refresh,
+            tooltip: S.of(context).reload,
+            onPressed: () => _loadFiles(forceRefresh: true),
+          ),
+          FloatingToolbarIconButton(
+            icon: Icons.info_outline,
+            tooltip: S.of(context).subtitleLibraryGuide,
+            onPressed: _showLibraryInfoDialog,
+          ),
+          if (Platform.isWindows || Platform.isMacOS || Platform.isLinux)
+            FloatingToolbarIconButton(
+              icon: Icons.folder_open,
+              tooltip: S.of(context).openFolder,
+              onPressed: _openSubtitleLibraryFolder,
+            ),
+        ],
+      ),
     );
   }
 }
