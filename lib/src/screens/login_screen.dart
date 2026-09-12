@@ -5,7 +5,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
 import '../providers/proxy_provider.dart';
 import '../services/kikoeru_api_service.dart';
-import '../services/network_proxy_service.dart';
 import '../utils/server_utils.dart';
 import '../utils/snackbar_util.dart';
 import '../utils/l10n_extensions.dart';
@@ -496,8 +495,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           sendTimeout: const Duration(seconds: 5),
         ),
       );
-      // 若配置了网络代理（如宿主机 Clash 7897），应用到测试连接
-      NetworkProxyService.applyProxy(dio);
+      // 代理由全局 KikoFluHttpOverrides 统一处理，无需在此单独应用
 
       final trimmedHost = host.trim();
       String baseUrl;
@@ -622,10 +620,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     return '${message.substring(0, maxLength)}...';
   }
 
-  // 配置网络代理（服务器被墙时走宿主机代理，如 10.0.2.2:7897）
+  // 配置网络代理（服务器被墙时走宿主机代理，如 10.0.2.2:7897）。
+  // 采用官方 ProxyConfig：非空地址保存为手动代理，留空恢复跟随系统。
   Future<void> _configureNetworkProxy() async {
-    final controller =
-        TextEditingController(text: NetworkProxyService.proxyConfig);
+    final controller = TextEditingController(
+      text: ProxyConfig.mode == ProxyMode.manual ? ProxyConfig.address : '',
+    );
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -637,7 +637,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             const Text(
               '服务器需要代理访问时配置，格式 host:port。'
               'MuMu 模拟器访问宿主机代理填 10.0.2.2:7897，'
-              '真机填宿主机局域网 IP:7897。留空则直连。',
+              '真机填宿主机局域网 IP:7897。留空则跟随系统代理。',
               style: TextStyle(fontSize: 13),
             ),
             const SizedBox(height: 12),
@@ -669,12 +669,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (result == null || !mounted) return;
 
     final trimmed = result.trim();
-    if (trimmed.isNotEmpty && NetworkProxyService.parseProxy(trimmed) == null) {
+    if (trimmed.isNotEmpty && ProxyConfig.normalizeAddress(trimmed) == null) {
       SnackBarUtil.showError(context, '代理格式无效，应为 host:port');
       return;
     }
 
-    await NetworkProxyService.setProxyConfig(trimmed);
+    await ProxyConfig.saveMode(
+      trimmed.isEmpty ? ProxyMode.system : ProxyMode.manual,
+      trimmed,
+    );
     if (!mounted) return;
     SnackBarUtil.showSuccess(context, '代理已保存，点「测试连接」验证');
   }
@@ -713,6 +716,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               )
             : null,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.vpn_key),
+            tooltip: '网络代理',
+            onPressed: _configureNetworkProxy,
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: TextButton.icon(
@@ -724,13 +732,6 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         ],
         // Show back button in adding account mode
         automaticallyImplyLeading: widget.isAddingAccount,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.vpn_key),
-            tooltip: '网络代理',
-            onPressed: _configureNetworkProxy,
-          ),
-        ],
       ),
       body: SafeArea(
         child: isLandscape ? _buildLandscapeLayout() : _buildPortraitLayout(),

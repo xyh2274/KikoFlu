@@ -1974,6 +1974,9 @@ class SJa extends S {
   }
 
   @override
+  String get supplementTaskBadge => '補充';
+
+  @override
   String get playlistLink => 'プレイリストリンク';
 
   @override

@@ -3756,6 +3756,12 @@ abstract class S {
   /// **'Supplement download failed: {error}'**
   String supplementDownloadFailed(Object error);
 
+  /// No description provided for @supplementTaskBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Supplement'**
+  String get supplementTaskBadge;
+
   /// No description provided for @playlistLink.
   ///
   /// In en, this message translates to:

@@ -2029,6 +2029,9 @@ class SRu extends S {
   }
 
   @override
+  String get supplementTaskBadge => 'Дополнение';
+
+  @override
   String get playlistLink => 'Ссылка на плейлист';
 
   @override

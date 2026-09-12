@@ -530,7 +530,7 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
 
         return MaterialApp(
           scaffoldMessengerKey: rootScaffoldMessengerKey,
-          title: 'Kikoeru',
+          title: 'KikoFlu',
           debugShowCheckedModeBanner: false,
           localizationsDelegates: S.localizationsDelegates,
           supportedLocales: S.supportedLocales,

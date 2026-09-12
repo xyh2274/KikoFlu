@@ -7,7 +7,6 @@ import '../utils/server_utils.dart';
 import '../services/storage_service.dart';
 import 'cache_service.dart';
 import 'log_service.dart';
-import 'network_proxy_service.dart';
 
 final _log = LogService.instance;
 
@@ -26,8 +25,7 @@ class KikoeruApiService {
 
   KikoeruApiService() {
     _dio = Dio();
-    // 若配置了网络代理（如宿主机 Clash 7897），应用到请求
-    NetworkProxyService.applyProxy(_dio);
+    // 代理由全局 KikoFluHttpOverrides 统一处理（见 main.dart / proxy_config.dart）
     _setupInterceptors();
   }
 

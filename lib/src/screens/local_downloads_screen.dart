@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
 import 'dart:io';
@@ -444,7 +443,7 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       groupedTasks.entries.where((entry) {
         final workId = entry.key;
         final tasks = entry.value;
-        final rjCode = 'RJ${workId.toString().padLeft(6, '0')}';
+        final rjCode = formatRJCode(workId);
 
         // 无任务记录的作品（仅磁盘目录），用 RJ 号匹配
         if (tasks.isEmpty) {
@@ -786,10 +785,6 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
         final crossAxisCount = displaySettings.applyCardSize(
           ResponsiveGridHelper.getBigGridCrossAxisCount(context),
         );
-        final isLandscape =
-            MediaQuery.orientationOf(context) == Orientation.landscape;
-        final gridSpacing = isLandscape ? 24.0 : 8.0;
-        final gridPadding = isLandscape ? 24.0 : 8.0;
 
         final tasks = snapshot.data ?? [];
         final completedTasks =
@@ -835,7 +830,9 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
                 layout: VirtualizedCollectionLayout.grid,
                 gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                   maxCrossAxisExtent: 210,
-                  childAspectRatio: 0.72,
+                  // 0.68（而非 0.72）：为紧凑卡片新增的标签行留出高度，
+                  // 避免标签/日期被固定 tile 底部裁剪
+                  childAspectRatio: 0.68,
                   crossAxisSpacing: 12,
                   mainAxisSpacing: 12,
                 ),
@@ -1358,7 +1355,7 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
                   overflow: TextOverflow.ellipsis,
                 ),
                 subtitle: Text(
-                  'RJ${w.workId.toString().padLeft(6, '0')}',
+                  formatRJCode(w.workId),
                   style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
                 ),
                 secondary: Icon(Icons.album_outlined, color: cs.primary),
@@ -1414,16 +1411,13 @@ class _SupplementDiffDialog extends StatefulWidget {
 
 class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
   // 选中的缺失文件集合，key 格式: '$workId::$localRelativePath'
+  // 注意：不提供"全选"入口——用户下载时通常只选取部分格式
+  // （如 wav 或 mp3、有无音效），必须逐个/按文件夹手动勾选。
   final Set<String> _selected = {};
   // 展开的文件夹集合（默认全部展开）
   final Set<String> _expanded = {};
 
-  int get _totalMissingCount =>
-      widget.works.fold(0, (sum, w) => sum + w.missingCount);
-
   int get _selectedFileCount => _selected.length;
-
-  bool get _allSelected => _selectedFileCount == _totalMissingCount;
 
   String _key(int workId, String path) => '$workId::$path';
 
@@ -1498,24 +1492,6 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     if (selectedCount == paths.length) return true;
     if (selectedCount == 0) return false;
     return null;
-  }
-
-  void _toggleAll() {
-    setState(() {
-      if (_allSelected) {
-        _selected.clear();
-      } else {
-        for (final w in widget.works) {
-          for (final node in w.tree) {
-            final paths = <String>[];
-            _collectMissingFilePaths(node, paths);
-            for (final p in paths) {
-              _selected.add(_key(w.workId, p));
-            }
-          }
-        }
-      }
-    });
   }
 
   // 切换文件夹展开/收起
@@ -1783,7 +1759,7 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              '${work.workTitle} (RJ${work.workId.toString().padLeft(6, '0')})',
+              '${work.workTitle} (${formatRJCode(work.workId)})',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
@@ -1817,19 +1793,7 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
       grouped.putIfAbsent(r.work.workId, () => []).add(r);
     }
     return AlertDialog(
-      title: Row(
-        children: [
-          Expanded(child: Text(l10n.supplementPickTitle)),
-          TextButton.icon(
-            onPressed: _toggleAll,
-            icon: Icon(
-              _allSelected ? Icons.deselect : Icons.select_all,
-              size: 18,
-            ),
-            label: Text(_allSelected ? l10n.deselectAll : l10n.selectAll),
-          ),
-        ],
-      ),
+      title: Text(l10n.supplementPickTitle),
       content: SizedBox(
         width: double.maxFinite,
         height: 520,
@@ -1882,34 +1846,38 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
           onPressed: () => Navigator.pop(context, null),
           child: Text(l10n.cancel),
         ),
+        // 必须手动选择文件后才能补充下载（不提供"全部补全"），
+        // 未选中任何文件时禁用
         TextButton(
-          onPressed: () {
-            // 按作品分组返回选中的缺失文件
-            final result = <int, List<SupplementFile>>{};
-            for (final work in widget.works) {
-              final files = <SupplementFile>[];
-              void collect(SupplementFileNode node) {
-                if (!node.isFolder) {
-                  if (!node.exists &&
-                      node.file != null &&
-                      _selected.contains(
-                          _key(work.workId, node.localRelativePath))) {
-                    files.add(node.file!);
-                  }
-                  return;
-                }
-                for (final c in node.children) {
-                  collect(c);
-                }
-              }
+          onPressed: _selectedFileCount == 0
+              ? null
+              : () {
+                  // 按作品分组返回选中的缺失文件
+                  final result = <int, List<SupplementFile>>{};
+                  for (final work in widget.works) {
+                    final files = <SupplementFile>[];
+                    void collect(SupplementFileNode node) {
+                      if (!node.isFolder) {
+                        if (!node.exists &&
+                            node.file != null &&
+                            _selected.contains(
+                                _key(work.workId, node.localRelativePath))) {
+                          files.add(node.file!);
+                        }
+                        return;
+                      }
+                      for (final c in node.children) {
+                        collect(c);
+                      }
+                    }
 
-              for (final node in work.tree) {
-                collect(node);
-              }
-              if (files.isNotEmpty) result[work.workId] = files;
-            }
-            Navigator.pop(context, result);
-          },
+                    for (final node in work.tree) {
+                      collect(node);
+                    }
+                    if (files.isNotEmpty) result[work.workId] = files;
+                  }
+                  Navigator.pop(context, result);
+                },
           child: Text(l10n.download),
         ),
       ],

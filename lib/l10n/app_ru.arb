@@ -696,6 +696,7 @@
   "noFilesNeedSupplement": "Локальные файлы в порядке, дополнительная загрузка не требуется",
   "supplementConfirmContent": "Обнаружено {count} отсутствующих файлов (всего {size}). Добавить в очередь загрузки?",
   "supplementDownloadFailed": "Ошибка дополнительной загрузки: {error}",
+  "supplementTaskBadge": "Дополнение",
 
   "playlistLink": "Ссылка на плейлист",
   "playlistLinkHint": "Вставьте ссылку на плейлист, например:\nhttps://www.asmr.one/playlist?id=...",

@@ -696,6 +696,7 @@
   "noFilesNeedSupplement": "ローカルファイルは完全で、補充は不要です",
   "supplementConfirmContent": "{count} 個の欠落ファイル（合計 {size}）を検出しました。ダウンロードキューに追加しますか？",
   "supplementDownloadFailed": "補充ダウンロードに失敗: {error}",
+  "supplementTaskBadge": "補充",
 
   "playlistLink": "プレイリストリンク",
   "playlistLinkHint": "プレイリストリンクを貼り付け、例:\nhttps://www.asmr.one/playlist?id=...",

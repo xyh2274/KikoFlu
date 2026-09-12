@@ -22,7 +22,6 @@ import '../providers/update_provider.dart';
 import '../providers/floating_lyric_provider.dart';
 import '../services/cache_service.dart';
 import '../services/download_service.dart';
-import '../services/network_proxy_service.dart';
 import '../services/translation_service.dart';
 import '../utils/snackbar_util.dart';
 import '../utils/ui_tokens.dart';
@@ -32,7 +31,6 @@ import '../widgets/settings_section.dart';
 import '../widgets/liquid_glass_layout.dart';
 import '../widgets/radio_option_group.dart';
 import '../widgets/settings_option_dialog.dart';
-import '../widgets/confirmation_dialog.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -394,82 +392,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ),
         SettingsListTile(
           icon: Icons.download_for_offline_outlined,
-          title: '从原 kikoeru 导入',
-          subtitle: '将旧版 kikoeru 下载的音声迁移到 KikoFlu',
+          title: '从本地导入',
+          subtitle: '将本地音声文件夹导入本应用',
           onTap: () => _importFromLegacyKikoeru(context),
-        ),
-        SettingsListTile(
-          icon: Icons.vpn_key,
-          title: '网络代理',
-          subtitle: NetworkProxyService.proxyConfig.isEmpty
-              ? '直连（服务器被墙时可配置，如 10.0.2.2:7897）'
-              : '当前: ${NetworkProxyService.proxyConfig}',
-          onTap: () => _configureNetworkProxy(context),
         ),
       ],
     );
-  }
-
-  Future<void> _configureNetworkProxy(BuildContext context) async {
-    final controller =
-        TextEditingController(text: NetworkProxyService.proxyConfig);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('网络代理设置'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '服务器需要代理访问时配置，格式 host:port。'
-              'MuMu 模拟器访问宿主机代理填 10.0.2.2:7897，'
-              '真机填宿主机局域网 IP:7897。留空则直连。',
-              style: TextStyle(fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: TextInputType.text,
-              decoration: const InputDecoration(
-                hintText: '如 10.0.2.2:7897',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text(S.of(ctx).cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
-
-    controller.dispose();
-    if (result == null || !mounted) return;
-
-    final trimmed = result.trim();
-    if (trimmed.isNotEmpty && NetworkProxyService.parseProxy(trimmed) == null) {
-      _showSnackBar(const SnackBar(
-        content: Text('代理格式无效，应为 host:port'),
-        backgroundColor: Colors.red,
-      ));
-      return;
-    }
-
-    await NetworkProxyService.setProxyConfig(trimmed);
-    if (!mounted) return;
-    _showSnackBar(const SnackBar(
-      content: Text('代理已保存，重启应用后生效'),
-    ));
-    setState(() {});
   }
 
   void _showLanguagePicker(BuildContext context, WidgetRef ref) {
@@ -696,11 +624,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       }
     }
 
-    // 选择源目录（通常是 /sdcard/KikoeruLib/libs_work）
+    // 选择源目录（本地音声文件夹，通常是下载根目录，如 KikoeruLib/libs_work）
     String? sourcePath;
     try {
       sourcePath = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: '选择原 kikoeru 下载目录（通常为 KikoeruLib/libs_work）',
+        dialogTitle: '选择本地音声目录（含 RJ 号文件夹的根目录）',
       );
     } catch (e) {
       if (!mounted) return;
@@ -796,49 +724,102 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _confirmAndClearCache(BuildContext dialogContext) async {
     final l10n = S.of(dialogContext);
+    // 分类清理选项：缓存类默认勾选，下载文件默认不勾
+    bool clearAppCache = true;
+    bool clearAudioCache = true;
+    bool clearImageCache = true;
     bool includeDownloads = false;
-    
+
     final result = await showDialog<Map<String, bool>>(
       context: dialogContext,
       builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: Text(l10n.confirmClear),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(l10n.confirmClearCacheMessage),
-              const SizedBox(height: 16),
-              // O10: 添加"是否包含下载文件"选项
-              CheckboxListTile(
-                title: Text(l10n.includeDownloads),
-                subtitle: Text(l10n.includeDownloadsWarning),
-                value: includeDownloads,
-                onChanged: (value) {
-                  setState(() {
-                    includeDownloads = value ?? false;
-                  });
-                },
-                controlAffinity: ListTileControlAffinity.leading,
-                contentPadding: EdgeInsets.zero,
+        builder: (context, setState) {
+          final nothingSelected = !clearAppCache &&
+              !clearAudioCache &&
+              !clearImageCache &&
+              !includeDownloads;
+          return AlertDialog(
+            title: Text(l10n.confirmClear),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(l10n.confirmClearCacheMessage),
+                const SizedBox(height: 8),
+                // 选择要清理的内容
+                CheckboxListTile(
+                  title: Text(l10n.storageCache),
+                  value: clearAppCache,
+                  onChanged: (value) {
+                    setState(() {
+                      clearAppCache = value ?? false;
+                    });
+                  },
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                CheckboxListTile(
+                  title: Text(l10n.storageAudioCache),
+                  value: clearAudioCache,
+                  onChanged: (value) {
+                    setState(() {
+                      clearAudioCache = value ?? false;
+                    });
+                  },
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                CheckboxListTile(
+                  title: Text(l10n.storageImageCache),
+                  value: clearImageCache,
+                  onChanged: (value) {
+                    setState(() {
+                      clearImageCache = value ?? false;
+                    });
+                  },
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                // O10: "下载文件"选项（默认不勾，危险操作）
+                CheckboxListTile(
+                  title: Text(l10n.includeDownloads),
+                  subtitle: Text(l10n.includeDownloadsWarning),
+                  value: includeDownloads,
+                  onChanged: (value) {
+                    setState(() {
+                      includeDownloads = value ?? false;
+                    });
+                  },
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, null),
+                child: Text(l10n.cancel),
+              ),
+              ElevatedButton(
+                // 全不选时禁用确认按钮
+                onPressed: nothingSelected
+                    ? null
+                    : () => Navigator.pop(context, {
+                          'confirmed': true,
+                          'appCache': clearAppCache,
+                          'audioCache': clearAudioCache,
+                          'imageCache': clearImageCache,
+                          'includeDownloads': includeDownloads,
+                        }),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                ),
+                child: Text(l10n.confirmClear),
               ),
             ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, null),
-              child: Text(l10n.cancel),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context, {'confirmed': true, 'includeDownloads': includeDownloads}),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-              ),
-              child: Text(l10n.confirmClear),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
 
@@ -852,8 +833,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
 
     try {
-      await CacheService.clearAllCache();
-      
+      // 按勾选项分类清理
+      if (result['appCache'] == true) {
+        await CacheService.clearAppCache();
+      }
+      if (result['audioCache'] == true) {
+        await CacheService.clearAudioCache();
+      }
+      if (result['imageCache'] == true) {
+        await CacheService.clearImageCache();
+      }
+
       // O10: 如果用户选择包含下载文件，则清理下载目录
       if (result['includeDownloads'] == true) {
         await DownloadService.instance.clearAllDownloads();
@@ -906,14 +896,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   // 显示缓存管理对话框
   Future<void> _showCacheManagementDialog() async {
     // 直接使用已经获取的 _cacheSize，避免重复调用
-    final currentSize = await CacheService.getCacheSize();
     final formattedSize = _cacheSize; // 使用已缓存的格式化字符串
-    int currentLimit = await CacheService.getCacheSizeLimit();
 
-    // O7: 获取分项存储数据
-    final audioCacheSize = await CacheService.getAudioCacheSize();
-    final imageCacheSize = await CacheService.getImageCacheSize();
-    final downloadSize = await CacheService.getDownloadSize();
+    // 分项大小并行计算，避免串行 await 导致对话框迟迟弹不出来
+    final results = await Future.wait<int>([
+      CacheService.getCacheSize(),
+      CacheService.getCacheSizeLimit(),
+      CacheService.getAudioCacheSize(),
+      CacheService.getImageCacheSize(),
+    ]);
+    final currentSize = results[0];
+    final currentLimit = results[1];
+
+    // O7: 获取分项存储数据（不含下载文件——遍历整个下载目录太慢，
+    // 下载占用请到"下载管理"页面查看）
+    final audioCacheSize = results[2];
+    final imageCacheSize = results[3];
     final appCacheSize = currentSize - audioCacheSize - imageCacheSize;
 
     if (!mounted) return;
@@ -1161,20 +1159,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                           size: imageCacheSize,
                                           color: Colors.orange,
                                         ),
-                                        const SizedBox(height: 8),
-                                        _buildStorageBreakdownItem(
-                                          context,
-                                          icon: Icons.download_outlined,
-                                          label: S.of(context).storageDownloads,
-                                          size: downloadSize,
-                                          color: Colors.green,
-                                        ),
                                         const Divider(height: 24),
                                         _buildStorageBreakdownItem(
                                           context,
                                           icon: Icons.storage_outlined,
                                           label: S.of(context).storageTotal,
-                                          size: currentSize + downloadSize,
+                                          size: currentSize,
                                           color: Theme.of(context).colorScheme.primary,
                                           isTotal: true,
                                         ),
@@ -1391,20 +1381,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                   size: imageCacheSize,
                                   color: Colors.orange,
                                 ),
-                                const SizedBox(height: 8),
-                                _buildStorageBreakdownItem(
-                                  context,
-                                  icon: Icons.download_outlined,
-                                  label: S.of(context).storageDownloads,
-                                  size: downloadSize,
-                                  color: Colors.green,
-                                ),
                                 const Divider(height: 24),
                                 _buildStorageBreakdownItem(
                                   context,
                                   icon: Icons.storage_outlined,
                                   label: S.of(context).storageTotal,
-                                  size: currentSize + downloadSize,
+                                  size: currentSize,
                                   color: Theme.of(context).colorScheme.primary,
                                   isTotal: true,
                                 ),

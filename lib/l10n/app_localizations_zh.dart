@@ -1967,6 +1967,9 @@ class SZh extends S {
   }
 
   @override
+  String get supplementTaskBadge => '补充';
+
+  @override
   String get playlistLink => '播放列表链接';
 
   @override
@@ -5667,6 +5670,9 @@ class SZhHant extends SZh {
   String supplementDownloadFailed(Object error) {
     return '補充下載失敗: $error';
   }
+
+  @override
+  String get supplementTaskBadge => '補充';
 
   @override
   String get playlistLink => '播放清單連結';

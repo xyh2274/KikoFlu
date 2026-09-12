@@ -16,7 +16,6 @@ import 'local_work_metadata_service.dart';
 import 'log_service.dart';
 import 'storage_space_service.dart';
 import 'notification_service.dart';
-import 'network_proxy_service.dart';
 
 final _log = LogService.instance;
 
@@ -25,8 +24,7 @@ class DownloadService {
   static DownloadService get instance => _instance ??= DownloadService._();
 
   DownloadService._() {
-    // 若配置了网络代理（如宿主机 Clash 7897），应用到下载请求
-    NetworkProxyService.applyProxy(_dio);
+    // 代理由全局 KikoFluHttpOverrides 统一处理（见 main.dart / proxy_config.dart）
   }
 
   final Map<String, CancelToken> _cancelTokens = {};
@@ -37,7 +35,15 @@ class DownloadService {
   final StreamController<List<DownloadTask>> _tasksController =
       StreamController<List<DownloadTask>>.broadcast();
   final List<DownloadTask> _tasks = [];
-  final Dio _dio = Dio();
+  // 超时说明：connectTimeout 防止连接阶段挂起；receiveTimeout 在流式下载
+  // 语义下是"两个数据块之间"的最大间隔（不是总时长），网络静默中断会抛
+  // receiveTimeout 并由 _isRetryableDioError 走自动重试，
+  // 避免任务永久卡在 downloading、_runningDownloads 残留 Future、
+  // resumeTask 中 _waitForRunningDownload 死等。
+  final Dio _dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 15),
+    receiveTimeout: const Duration(seconds: 60),
+  ));
   final LocalWorkMetadataService _localMetadataService =
       const LocalWorkMetadataService();
 
@@ -223,9 +229,12 @@ class DownloadService {
         return coverFile.path;
       }
 
-      // 下载图片
-      _dio.options.headers.addAll(StorageService.serverCookieHeaders);
-      await _dio.download(coverUrl, coverFile.path);
+      // 下载图片（headers 放请求级，避免污染共享 _dio.options）
+      await _dio.download(
+        coverUrl,
+        coverFile.path,
+        options: Options(headers: StorageService.serverCookieHeaders),
+      );
       return coverFile.path;
     } catch (e) {
       _log.error('下载封面图片失败: $e', tag: 'Download');
@@ -237,11 +246,14 @@ class DownloadService {
   Future<void> _saveWorkMetadata(
     int workId,
     Map<String, dynamic> metadata,
-    String? coverUrl,
-  ) async {
+    String? coverUrl, {
+    bool mergeWithExisting = false,
+  }) async {
     try {
       final workDir = Directory(await _getWorkDownloadDirectory(workId));
-      final metadataToSave = Map<String, dynamic>.from(metadata);
+      final metadataToSave = mergeWithExisting
+          ? await _mergeWithDiskMetadata(workId, metadata)
+          : Map<String, dynamic>.from(metadata);
       if (_metadataIdAsPositiveInt(metadataToSave['id']) == null) {
         metadataToSave['id'] = workId;
       }
@@ -295,6 +307,42 @@ class DownloadService {
     } catch (e) {
       _log.error('更新作品封面元数据失败: $e', tag: 'Download');
     }
+  }
+
+  /// 读取磁盘现有元数据并与 [incoming] 合并：磁盘非空字段优先。
+  /// 用于下载/补充下载路径：传入的任务元数据快照可能缺 tags/vas/children/
+  /// localCoverPath 等字段，直接覆盖会把补全过的元数据冲掉
+  /// （曾导致已下载列表标签丢失）。
+  Future<Map<String, dynamic>> _mergeWithDiskMetadata(
+    int workId,
+    Map<String, dynamic> incoming,
+  ) async {
+    final existing = await _loadWorkMetadata(workId);
+    if (existing == null) return Map<String, dynamic>.from(incoming);
+    return mergeMetadataPreservingLocal(
+      incoming: incoming,
+      local: existing,
+    );
+  }
+
+  /// 元数据合并：以 [incoming] 为基底，[local]（磁盘现有）中的非空字段覆盖之。
+  /// 与 [scrapeWorkMetadata] 的在线合并语义一致；本地标题为纯 RJ 编号时让位。
+  static Map<String, dynamic> mergeMetadataPreservingLocal({
+    required Map<String, dynamic> incoming,
+    required Map<String, dynamic> local,
+  }) {
+    final merged = Map<String, dynamic>.from(incoming);
+    local.forEach((key, value) {
+      if (value == null) return;
+      if (value is String && value.trim().isEmpty) return;
+      if (value is List && value.isEmpty) return;
+      if (value is Map && value.isEmpty) return;
+      if (key == 'title' && value is String && isPureRjCode(value)) {
+        return; // 本地标题为纯 RJ 编号时让位给传入的真实标题
+      }
+      merged[key] = value;
+    });
+    return merged;
   }
 
   // 从硬盘读取作品元数据
@@ -477,6 +525,7 @@ class DownloadService {
     String? coverUrl,
     String? relativePath, // 相对路径，用于按文件树组织
     bool forceRedownload = false, // 补充下载：强制移除旧的已完成记录并重新下载
+    bool isSupplemental = false, // 补充下载：任务来源标记，列表中便于复查管理
   }) {
     final safeFileName = relativePath != null && relativePath.isNotEmpty
         ? '${DownloadFilePathService.safeRelativePath(relativePath)}/'
@@ -501,6 +550,7 @@ class DownloadService {
       workMetadata: workMetadata,
       coverUrl: coverUrl,
       forceRedownload: forceRedownload,
+      isSupplemental: isSupplemental,
     );
     _pendingTaskAdds[identity] = operation;
     unawaited(
@@ -530,6 +580,7 @@ class DownloadService {
     Map<String, dynamic>? workMetadata,
     String? coverUrl,
     bool forceRedownload = false,
+    bool isSupplemental = false,
   }) async {
     // 检查是否已存在
     final existingTask = _findTask(
@@ -552,8 +603,13 @@ class DownloadService {
           if (existingTask.workMetadata == null && workMetadata != null) {
             final updatedTask = existingTask.copyWith(workMetadata: workMetadata);
             _updateTask(updatedTask, immediate: true);
-            // 保存元数据到硬盘
-            await _saveWorkMetadata(workId, workMetadata, coverUrl);
+            // 保存元数据到硬盘（合并保护：不冲掉磁盘上已补全的字段）
+            await _saveWorkMetadata(
+              workId,
+              workMetadata,
+              coverUrl,
+              mergeWithExisting: true,
+            );
             return updatedTask;
           }
           return existingTask;
@@ -598,7 +654,14 @@ class DownloadService {
         // 确保目录存在
         await targetFile.parent.create(recursive: true);
 
-        if (!await targetFile.exists()) {
+        // 目标已存在时不覆盖——但补充下载（forceRedownload）例外：
+        // 目标可能是坏文件（0 字节/魔数损坏），必须用缓存内容替换
+        if (!await targetFile.exists() || forceRedownload) {
+          if (await targetFile.exists()) {
+            try {
+              await targetFile.delete();
+            } catch (_) {}
+          }
           await File(cachedFile).copy(targetPath);
         }
 
@@ -619,15 +682,21 @@ class DownloadService {
           createdAt: DateTime.now(),
           completedAt: DateTime.now(),
           workMetadata: workMetadata,
+          isSupplemental: isSupplemental,
         );
 
         _tasks.add(task);
         await _saveTasks();
         _tasksController.add(List.from(_tasks));
 
-        // 保存作品元数据到硬盘
+        // 保存作品元数据到硬盘（合并保护：不冲掉磁盘上已补全的字段）
         if (workMetadata != null) {
-          await _saveWorkMetadata(workId, workMetadata, coverUrl);
+          await _saveWorkMetadata(
+            workId,
+            workMetadata,
+            coverUrl,
+            mergeWithExisting: true,
+          );
         }
 
         return task;
@@ -648,6 +717,7 @@ class DownloadService {
       totalBytes: totalBytes,
       createdAt: DateTime.now(),
       workMetadata: workMetadata,
+      isSupplemental: isSupplemental,
     );
 
     _tasks.add(task);
@@ -656,9 +726,14 @@ class DownloadService {
     // 添加任务后立即保存
     await _saveTasks();
 
-    // 保存作品元数据到硬盘
+    // 保存作品元数据到硬盘（合并保护：不冲掉磁盘上已补全的字段）
     if (workMetadata != null) {
-      await _saveWorkMetadata(workId, workMetadata, coverUrl);
+      await _saveWorkMetadata(
+        workId,
+        workMetadata,
+        coverUrl,
+        mergeWithExisting: true,
+      );
     }
 
     // 自动开始下载（通过队列调度）
@@ -735,22 +810,6 @@ class DownloadService {
       await download;
     } catch (_) {
       // The download service records the failure; resume can still retry it.
-    }
-  }
-
-  void _markTaskFailedIfCurrent(String taskId, Object error) {
-    final currentTask = _tasks.cast<DownloadTask?>().firstWhere(
-      (candidate) => candidate?.id == taskId,
-      orElse: () => null,
-    );
-    if (currentTask?.status == DownloadStatus.downloading) {
-      _updateTask(
-        currentTask!.copyWith(
-          status: DownloadStatus.failed,
-          error: error.toString(),
-        ),
-        immediate: true,
-      );
     }
   }
 
@@ -875,8 +934,6 @@ class DownloadService {
       int lastUpdateTime = 0;
       const updateInterval = 500; // 500ms 更新一次
 
-      _dio.options.headers.addAll(StorageService.serverCookieHeaders);
-
       // O8: 断点续传 - 检查临时文件是否存在，如果存在则从断点续传
       int downloadedBytes = 0;
       bool isResuming = false;
@@ -886,8 +943,6 @@ class DownloadService {
           isResuming = true;
           _log.info('发现临时文件，尝试断点续传: ${task.fileName}, 已下载 ${StorageSpaceService.formatBytes(downloadedBytes)}',
               tag: 'Download');
-          // 添加 Range 请求头
-          _dio.options.headers['Range'] = 'bytes=$downloadedBytes-';
         }
       }
 
@@ -895,10 +950,20 @@ class DownloadService {
           tag: 'Download');
 
       // O8: 使用 ResponseType.stream 支持断点续传
+      // 关键：Range/Cookie 必须放在请求级 headers，不能写进 _dio.options.headers。
+      // _dio 为全部任务共享，直接改 options.headers 会让 Range 头在任务间残留，
+      // 污染后续从头下载的请求（416 循环 / 只落盘后半段导致文件损坏），
+      // 且只有重启应用（重建 Dio 实例）才能恢复。
       final response = await _dio.get<ResponseBody>(
         task.downloadUrl,
         cancelToken: cancelToken,
-        options: Options(responseType: ResponseType.stream),
+        options: Options(
+          responseType: ResponseType.stream,
+          headers: {
+            ...StorageService.serverCookieHeaders,
+            if (isResuming) 'Range': 'bytes=$downloadedBytes-',
+          },
+        ),
       );
 
       if (response.data == null) {
@@ -985,7 +1050,46 @@ class DownloadService {
         return;
       }
 
-      // 校验通过，重命名临时文件为最终文件
+      // 0 字节文件：服务器未返回 size 时上面的校验会放行空文件，
+      // 导致"下载成功"但播放失败（转圈后报错）。删除临时文件并走统一重试。
+      if (actualBytes == 0) {
+        _log.error(
+          '下载文件为空: ${task.fileName}, 实际 0 字节',
+          tag: 'Download',
+        );
+        try {
+          if (await tempFile.exists()) await tempFile.delete();
+        } catch (_) {}
+        _cancelTokens.remove(task.id);
+        _scheduleRetry(task, '下载文件为空（0 字节），请稍后重试');
+        return;
+      }
+
+      // 魔数校验：服务器未返回 size 时上面的校验会放行错误响应体
+      // （如 JSON/HTML 错误信息被存成 .wav/.mp3），当场拦截，
+      // 避免"下载成功"却播放失败。
+      if (await isCorruptMediaFile(tempFile, task.fileName)) {
+        _log.error(
+          '下载文件魔数校验失败: ${task.fileName}, '
+          '响应内容不是 ${task.fileName.split('.').last.toLowerCase()} 格式',
+          tag: 'Download',
+        );
+        try {
+          if (await tempFile.exists()) await tempFile.delete();
+        } catch (_) {}
+        _cancelTokens.remove(task.id);
+        _scheduleRetry(task, '下载文件内容损坏（格式校验失败），将重新下载');
+        return;
+      }
+
+      // 校验通过，重命名临时文件为最终文件。
+      // 若目标位置已有旧文件（如待覆盖的 0 字节坏文件），先删除，
+      // 避免 rename 在目标存在时失败或留下旧坏文件。
+      if (await file.exists()) {
+        try {
+          await file.delete();
+        } catch (_) {}
+      }
       await tempFile.rename(filePath);
 
       _log.info('下载完成: ${task.fileName}', tag: 'Download');
@@ -1032,6 +1136,72 @@ class DownloadService {
         _log.error('文件系统错误: ${task.fileName}, filePath=$filePath, error=$e',
             tag: 'Download');
         _failNoRetry(task, '文件系统错误: $e');
+      } else if (e is DioException && e.response?.statusCode == 416) {
+        // 416 Range Not Satisfiable：续传偏移越界。
+        // 常见成因：连接中断后重试时本地临时文件字节数 >= 服务器文件大小。
+        // 若服务器 Content-Range 显示本地已完整，直接落盘；否则删临时文件从头重下。
+        _log.warning(
+            '服务器返回416（续传偏移越界）: ${task.fileName}, 已下载 ${StorageSpaceService.formatBytes(await tempFile.exists() ? await tempFile.length() : 0)}',
+            tag: 'Download');
+        var finalizedFrom416 = false;
+        final contentRange =
+            e.response?.headers.value('content-range') ?? '';
+        final totalMatch =
+            RegExp(r'bytes\s+\*/(\d+)').firstMatch(contentRange);
+        if (totalMatch != null && await tempFile.exists()) {
+          final serverTotal = int.parse(totalMatch.group(1)!);
+          final localBytes = await tempFile.length();
+          if (localBytes == serverTotal) {
+            // 本地临时文件已完整（收尾时断连导致未走到重命名），直接落盘
+            await file.parent.create(recursive: true);
+            await tempFile.rename(filePath);
+            final currentTask = _tasks.firstWhere(
+              (t) => t.id == task.id,
+              orElse: () => task,
+            );
+            // 显式构造以清除旧 error（copyWith 的 error 参数无法置 null）
+            _updateTask(
+              DownloadTask(
+                id: currentTask.id,
+                workId: currentTask.workId,
+                workTitle: currentTask.workTitle,
+                fileName: currentTask.fileName,
+                downloadUrl: currentTask.downloadUrl,
+                hash: currentTask.hash,
+                totalBytes: serverTotal,
+                downloadedBytes: serverTotal,
+                priority: currentTask.priority,
+                attemptCount: currentTask.attemptCount,
+                status: DownloadStatus.completed,
+                createdAt: currentTask.createdAt,
+                completedAt: DateTime.now(),
+                workMetadata: currentTask.workMetadata,
+              ),
+              immediate: true,
+            );
+            if (identical(_cancelTokens[task.id], cancelToken)) {
+              _cancelTokens.remove(task.id);
+            }
+            _log.info('416修复：文件已完整，直接完成: ${task.fileName}',
+                tag: 'Download');
+            unawaited(NotificationService.instance
+                .showDownloadCompleteNotification(
+              title: '下载完成',
+              body: task.fileName,
+            ));
+            finalizedFrom416 = true;
+          }
+        }
+        if (!finalizedFrom416) {
+          // 服务器文件与本地不一致：删除过期临时文件，等待重试时从头下载
+          // （无 Range 头不会再 416）。
+          // 必须走 _scheduleRetry 统一计数（指数退避 + 上限），否则会形成
+          // "中断→重试→416→立即全量重下→又中断" 的无限循环，耗尽 CPU/流量。
+          try {
+            if (await tempFile.exists()) await tempFile.delete();
+          } catch (_) {}
+          _scheduleRetry(task, '续传偏移越界(416)，已清理临时文件，将重新下载');
+        }
       } else if (e is DioException) {
         _log.error(
             '网络错误: ${task.fileName}, type=${e.type}, message=${e.message}, url=${task.downloadUrl}',
@@ -2084,8 +2254,16 @@ class DownloadService {
           //    不重复读盘完整性判断、不发在线请求、不重复检查封面，节省时间与资源
           //    （跳过的不计入 maxWorksPerRun 配额，避免大库中靠后的未标记
           //      作品永远排不到）。
+          //    文件树缺失/为空的作品不跳过：曾被任务快照覆盖的元数据可能
+          //    残留 metadataComplete 标记但 children 为空，需走 1.5 重建；
+          //    已重建过（fileTreeRebuilt）的空作品除外，避免重复扫描占配额。
           var metadata = await _loadWorkMetadata(workId);
-          if (metadata != null && metadata['metadataComplete'] == true) {
+          final hasUsableFileTree = metadata != null &&
+              metadata['children'] is List &&
+              (metadata['children'] as List).isNotEmpty;
+          if (metadata != null &&
+              metadata['metadataComplete'] == true &&
+              (hasUsableFileTree || metadata['fileTreeRebuilt'] == true)) {
             skippedCount++;
             continue;
           }
@@ -2111,6 +2289,23 @@ class DownloadService {
             await _workMetadataFile(workDir)
                 .writeAsString(jsonEncode(metadata), flush: true);
             _log.info('已生成本地基础元数据: RJ$workId', tag: 'Download');
+          }
+
+          // 1.5) 元数据存在但文件树缺失/为空（曾被任务快照覆盖）时，
+          //      基于磁盘实际文件重建 children，否则离线详情页无文件可播。
+          //      buildFallbackMetadata 保留已有字段，仅重建文件树与封面。
+          //      重建后（含空作品）写 fileTreeRebuilt 标记避免每轮重复扫描。
+          if (metadata['children'] is! List ||
+              (metadata['children'] as List).isEmpty) {
+            metadata = await _localMetadataService.buildFallbackMetadata(
+              workId: workId,
+              workDir: workDir,
+              directoryName: p.basename(workDir.path),
+              existingMetadata: metadata,
+            );
+            metadata['fileTreeRebuilt'] = true;
+            await _saveWorkMetadata(workId, metadata, null);
+            _log.info('已重建作品文件树: RJ$workId', tag: 'Download');
           }
 
           // 2) 缺关键字段（标题为 RJ 号/无标签/无声优/无日期）时在线合并补全
@@ -2303,19 +2498,10 @@ class DownloadService {
 
       // 合并：以在线详情为基底，保留本地非空字段（本地文件树/封面等不丢失）。
       // 特例：本地标题为纯 RJ 编号（导入时无法推断真实标题）时，使用在线真实标题。
-      final merged = Map<String, dynamic>.from(online);
-      localMetadata.forEach((key, value) {
-        if (value == null) return;
-        if (value is String && value.trim().isEmpty) return;
-        if (value is List && value.isEmpty) return;
-        if (value is Map && value.isEmpty) return;
-        if (key == 'title' &&
-            value is String &&
-            isPureRjCode(value)) {
-          return; // 让位给在线真实标题
-        }
-        merged[key] = value;
-      });
+      final merged = mergeMetadataPreservingLocal(
+        incoming: online,
+        local: localMetadata,
+      );
       await _saveWorkMetadata(workId, merged, null);
       _log.info('已刮削并补全在线元数据: workId=$workId', tag: 'Download');
       return true;
@@ -2595,7 +2781,7 @@ class DownloadService {
       );
     } catch (e) {
       result.error = e.toString();
-      _log.error('从原 kikoeru 导入失败: $e', tag: 'Download');
+      _log.error('从本地导入失败: $e', tag: 'Download');
     }
     return result;
   }
@@ -2859,6 +3045,70 @@ class DownloadService {
 
   // ==================== M4: 补充下载 ====================
 
+  /// 检查媒体文件是否损坏（文件头魔数与扩展名对应格式不符）。
+  ///
+  /// 背景：服务器不返回文件大小时（[DownloadTask.totalBytes] 为 null），
+  /// 下载完整性校验会跳过，任何非零内容都会被标记完成——包括：
+  /// - 错误响应体（JSON/HTML）被存成 .wav/.mp3；
+  /// - 断点续传错乱落盘的半截数据（如 Range 头污染期间下载的文件）。
+  /// 这类文件非零字节但无法播放。本方法按扩展名校验文件头魔数，
+  /// 损坏返回 true；非媒体扩展名或读取失败不校验（返回 false）。
+  static Future<bool> isCorruptMediaFile(File file, String fileName) async {
+    final ext = fileName.toLowerCase().split('.').last;
+    const mediaExts = {
+      'wav', 'mp3', 'flac', 'm4a', 'm4b', 'ogg', 'opus',
+      'mp4', 'mkv', 'webm', 'mov', 'avi',
+    };
+    if (!mediaExts.contains(ext)) return false;
+
+    try {
+      final raf = await file.open();
+      try {
+        final bytes = await raf.read(12);
+        if (bytes.length < 4) return true; // 比魔数还短，必然损坏
+
+        bool startsWith(List<int> magic, [int offset = 0]) {
+          if (bytes.length < offset + magic.length) return false;
+          for (var i = 0; i < magic.length; i++) {
+            if (bytes[offset + i] != magic[i]) return false;
+          }
+          return true;
+        }
+
+        switch (ext) {
+          case 'wav':
+          case 'avi':
+            return !startsWith([0x52, 0x49, 0x46, 0x46]); // "RIFF"
+          case 'mp3':
+            // "ID3" 标签或 MPEG 帧同步（0xFF 0xEx）
+            if (startsWith([0x49, 0x44, 0x33])) return false;
+            return !(bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0);
+          case 'flac':
+            return !startsWith([0x66, 0x4C, 0x61, 0x43]); // "fLaC"
+          case 'ogg':
+          case 'opus':
+            return !startsWith([0x4F, 0x67, 0x67, 0x53]); // "OggS"
+          case 'm4a':
+          case 'm4b':
+          case 'mp4':
+          case 'mov':
+            // MP4 容器：偏移 4 处 "ftyp"，或直接以 "moov" 开头（无 ftyp 的合法变体）
+            return !startsWith([0x66, 0x74, 0x79, 0x70], 4) &&
+                !startsWith([0x6D, 0x6F, 0x6F, 0x76]);
+          case 'mkv':
+          case 'webm':
+            return !startsWith([0x1A, 0x45, 0xDF, 0xA3]); // EBML 头
+          default:
+            return false;
+        }
+      } finally {
+        await raf.close();
+      }
+    } catch (_) {
+      return false; // 读文件失败（权限等）不判为损坏
+    }
+  }
+
   /// 对比在线音声文件与本地磁盘文件，返回需要补充下载的文件列表。
   /// 适用于误删本地文件后的恢复：以在线文件树为准，找出磁盘上缺失的文件。
   /// [workDirPath] 可显式指定作品目录；缺省时按 workId 定位。
@@ -2906,8 +3156,14 @@ class DownloadService {
       }
       walk(tracks, '');
 
-      // 3. 扫描本地磁盘上实际存在的文件（跳过元数据/封面/临时文件）
+      // 3. 扫描本地磁盘上实际存在的文件（跳过元数据/封面/临时文件）。
+      //    以下坏文件不算存在，视为缺失以便补充下载自动修复：
+      //    a) 0 字节文件（服务器未返回 size 时被完整性校验放行）；
+      //    b) 魔数损坏的媒体文件——文件头不是对应格式（如错误响应体
+      //       JSON/HTML 被存成 .wav，或断点续传错乱落盘的半截数据），
+      //       服务器不返回 size 时校验无法发现，播放必然失败。
       final localPaths = <String>{};
+      final localFileSizes = <String, int>{};
       final dirPath = workDirPath ?? (await getWorkDirectory(workId)).path;
       final workDir = Directory(dirPath);
       if (await workDir.exists()) {
@@ -2921,15 +3177,42 @@ class DownloadService {
           )) {
             continue;
           }
+          final fileSize = await entity.length();
+          if (fileSize == 0) continue; // 0 字节坏文件视为缺失
+          if (await isCorruptMediaFile(entity, fileName)) {
+            _log.warning(
+              '检测到损坏文件（魔数校验失败）: $fileName',
+              tag: 'Download',
+            );
+            continue; // 非零但内容损坏，视为缺失
+          }
           final rel = p.relative(entity.path, from: dirPath);
-          localPaths.add(DownloadFilePathService.normalizeRelativePath(rel));
+          final normalized =
+              DownloadFilePathService.normalizeRelativePath(rel);
+          localPaths.add(normalized);
+          localFileSizes[normalized] = fileSize;
         }
       }
 
-      // 4. 对比得出缺失文件
-      final missing = onlineFiles
-          .where((f) => !localPaths.contains(f.localRelativePath))
-          .toList();
+      // 4. 对比得出缺失文件：
+      //    - 本地不存在的；
+      //    - 或大小与在线不符的（魔数正常但内容被截断/污染，
+      //      服务器返回了 size 时才能检出）。
+      final missing = onlineFiles.where((f) {
+        if (!localPaths.contains(f.localRelativePath)) return true;
+        if (f.size != null && f.size! > 0) {
+          final localSize = localFileSizes[f.localRelativePath];
+          if (localSize != null && localSize != f.size) {
+            _log.warning(
+              '检测到损坏文件（大小不符）: ${f.localRelativePath}, '
+              '本地 $localSize, 在线 ${f.size}',
+              tag: 'Download',
+            );
+            return true;
+          }
+        }
+        return false;
+      }).toList();
 
       // 5. 构建完整文件树（以在线列表为准，从根目录开始），
       //    每个文件标记本地是否存在，本地缺失的整个目录也会在树中体现
@@ -3000,6 +3283,7 @@ class DownloadService {
         workMetadata: workMetadata,
         coverUrl: coverUrl,
         forceRedownload: true,
+        isSupplemental: true,
       );
       added++;
     }

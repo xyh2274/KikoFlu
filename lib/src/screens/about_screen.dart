@@ -182,7 +182,7 @@ class _AboutScreenState extends ConsumerState<AboutScreen> {
                   icon: Icons.link,
                   iconColor: primaryColor,
                   title: S.of(context).projectRepo,
-                  subtitle: _repoUri.toString(),
+                  subtitle: 'GitHub',
                   trailing: const Icon(Icons.open_in_new),
                   onTap: () => _openRepository(),
                 ),

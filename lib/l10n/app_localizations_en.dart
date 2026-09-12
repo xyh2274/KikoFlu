@@ -2025,6 +2025,9 @@ class SEn extends S {
   }
 
   @override
+  String get supplementTaskBadge => 'Supplement';
+
+  @override
   String get playlistLink => 'Playlist Link';
 
   @override

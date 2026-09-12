@@ -886,6 +886,7 @@
   "noFilesNeedSupplement": "Local files are complete, no supplement needed",
   "supplementConfirmContent": "Found {count} missing files ({size} total). Add them to the download queue?",
   "supplementDownloadFailed": "Supplement download failed: {error}",
+  "supplementTaskBadge": "Supplement",
 
   "playlistLink": "Playlist Link",
   "playlistLinkHint": "Paste playlist link, e.g.:\nhttps://www.asmr.one/playlist?id=...",

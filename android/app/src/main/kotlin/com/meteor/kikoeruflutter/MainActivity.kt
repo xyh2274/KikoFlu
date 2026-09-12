@@ -1,6 +1,7 @@
 package com.meteor.kikoeruflutter
 
 import android.content.Intent
+import android.util.Log
 import android.view.WindowManager
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -16,10 +17,11 @@ class MainActivity : AudioServiceActivity() {
     private var subtitleDirectoryPicker: SubtitleDirectoryPicker? = null
     private val screenAwakeChannelName = "com.meteor.kikoeruflutter/screen_awake"
     private val systemProxyChannelName = "com.meteor.kikoeruflutter/system_proxy"
+    private val appLogsChannelName = "com.meteor.kikoeruflutter/app_logs"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        
+
         // 注册悬浮字幕插件
         floatingLyricPlugin = FloatingLyricPlugin.getInstance(this)
         val channel = MethodChannel(
@@ -36,6 +38,25 @@ class MainActivity : AudioServiceActivity() {
             activity = this,
             messenger = flutterEngine.dartExecutor.binaryMessenger
         )
+
+        // 应用日志通道：Dart 侧 LogService 转发日志到 Android logcat。
+        // release 模式下 Flutter engine 不转发 Dart stdout/stderr，
+        // 只能经原生 android.util.Log 输出，才能用 adb logcat 查看。
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            appLogsChannelName
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "writeLog" -> {
+                    val level = call.argument<Int>("level") ?: Log.INFO
+                    val tag = call.argument<String>("tag") ?: "Kikoeru"
+                    val message = call.argument<String>("message") ?: ""
+                    Log.println(level, tag, message)
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,

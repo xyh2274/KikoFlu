@@ -693,6 +693,7 @@
   "noFilesNeedSupplement": "本地文件完整，无需补充下载",
   "supplementConfirmContent": "发现 {count} 个缺失文件（共 {size}），是否加入下载队列？",
   "supplementDownloadFailed": "补充下载失败: {error}",
+  "supplementTaskBadge": "补充",
 
   "playlistLink": "播放列表链接",
   "playlistLinkHint": "粘贴播放列表链接，如:\nhttps://www.asmr.one/playlist?id=...",

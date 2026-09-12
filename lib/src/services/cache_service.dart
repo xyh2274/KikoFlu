@@ -573,11 +573,8 @@ class CacheService {
   // 清除所有缓存
   static Future<void> clearAllCache() async {
     try {
-      // 1. 清除文件缓存（PDF、文本等）
-      final cacheDir = await _getCacheDirectory();
-      if (await cacheDir.exists()) {
-        await cacheDir.delete(recursive: true);
-      }
+      // 1. 清除应用缓存（文件缓存 + 元数据）
+      await clearAppCache();
 
       // 2. 清除音频缓存
       await clearAudioCache();
@@ -585,7 +582,24 @@ class CacheService {
       // 3. 清除图片缓存
       await clearImageCache();
 
-      // 4. 清除 SharedPreferences 中的缓存元数据
+      _log.captureOutput('[Cache] 所有缓存已清除');
+    } catch (e) {
+      _log.captureOutput('[Cache] 清除缓存失败: $e');
+      rethrow;
+    }
+  }
+
+  // 清除应用缓存（文件缓存 PDF/文本 + SharedPreferences 元数据，不含音频/图片缓存）。
+  // 供缓存管理的分类清理使用。
+  static Future<void> clearAppCache() async {
+    try {
+      // 1. 清除文件缓存（PDF、文本等）
+      final cacheDir = await _getCacheDirectory();
+      if (await cacheDir.exists()) {
+        await cacheDir.delete(recursive: true);
+      }
+
+      // 2. 清除 SharedPreferences 中的缓存元数据
       final prefs = await StorageService.getPrefs();
       final keys = prefs.getKeys();
       for (final key in keys) {
@@ -598,9 +612,9 @@ class CacheService {
         }
       }
 
-      _log.captureOutput('[Cache] 所有缓存已清除');
+      _log.captureOutput('[Cache] 应用缓存已清除');
     } catch (e) {
-      _log.captureOutput('[Cache] 清除缓存失败: $e');
+      _log.captureOutput('[Cache] 清除应用缓存失败: $e');
       rethrow;
     }
   }

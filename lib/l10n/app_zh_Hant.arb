@@ -685,6 +685,7 @@
   "noFilesNeedSupplement": "本機檔案完整，無需補充下載",
   "supplementConfirmContent": "發現 {count} 個缺失檔案（共 {size}），是否加入下載佇列？",
   "supplementDownloadFailed": "補充下載失敗: {error}",
+  "supplementTaskBadge": "補充",
 
   "playlistLink": "播放清單連結",
   "playlistLinkHint": "貼上播放清單連結，如:\nhttps://www.asmr.one/playlist?id=...",

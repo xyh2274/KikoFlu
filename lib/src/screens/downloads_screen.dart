@@ -419,7 +419,36 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
               onChanged: (_) => _toggleTaskSelection(task.id),
             )
           : _buildStatusIcon(task.status),
-      title: Text(task.fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              task.fileName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // 补充下载任务标记：由"已下载→补充下载"创建，便于复查管理
+          if (task.isSupplemental) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                color: Colors.teal.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: Colors.teal.withValues(alpha: 0.5)),
+              ),
+              child: Text(
+                S.of(context).supplementTaskBadge,
+                style: const TextStyle(
+                  fontSize: 10,
+                  color: Colors.teal,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
       onTap: _isSelectionMode ? () => _toggleTaskSelection(task.id) : null,
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

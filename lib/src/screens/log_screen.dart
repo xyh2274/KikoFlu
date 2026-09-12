@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -111,11 +112,14 @@ class _LogScreenState extends State<LogScreen> {
       final content = logService.exportAsText();
       final fileName = logService.exportFileName;
 
-      if (Platform.isIOS) {
+      // 移动端（iOS/Android）必须直接传字节：Android 的 saveFile 走 SAF，
+      // 返回 content:// URI，dart:io File 无法写入；传 bytes 由插件完成保存。
+      // 注意用 utf8.encode 而非 codeUnits，避免中文等多字节字符乱码。
+      if (Platform.isIOS || Platform.isAndroid) {
         final result = await FilePicker.platform.saveFile(
           dialogTitle: l10n.logExport,
           fileName: fileName,
-          bytes: Uint8List.fromList(content.codeUnits),
+          bytes: Uint8List.fromList(utf8.encode(content)),
         );
         if (!mounted || result == null) return;
         SnackBarUtil.showSuccess(context, l10n.logExported(result));
