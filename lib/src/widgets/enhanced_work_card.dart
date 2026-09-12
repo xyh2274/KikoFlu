@@ -304,10 +304,10 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
                           fontSize: titleFontSize,
                         ),
                   ),
-                  // 标签行（紧凑布局最多展示 6 个）
+                  // 标签行（瀑布流 tile 高度自适应，标签全部展示不截断）
                   if (widget.work.tags != null && widget.work.tags!.isNotEmpty) ...[
                     const SizedBox(height: 3),
-                    _buildTagsRow(context, maxTags: 6),
+                    _buildTagsRow(context),
                   ],
                   if (hasReleaseDate || trailingAction != null) ...[
                     const SizedBox(height: 3),
@@ -956,22 +956,18 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
     );
   }
 
-  Widget _buildTagsRow(BuildContext context, {int? maxTags}) {
+  Widget _buildTagsRow(BuildContext context) {
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     final displaySettings = ref.watch(workCardDisplayProvider);
     final fontSize = displaySettings.scaleFontSize(isLandscape ? 13.0 : 10.0);
 
-    var tags = widget.work.tags!;
-    if (maxTags != null && tags.length > maxTags) {
-      tags = tags.take(maxTags).toList();
-    }
     return Container(
       constraints: const BoxConstraints(minHeight: 14),
       child: Wrap(
         spacing: 3,
         runSpacing: 2,
-        children: tags.map((tag) {
+        children: widget.work.tags!.map((tag) {
           return TagChip(
             tag: tag,
             fontSize: fontSize,

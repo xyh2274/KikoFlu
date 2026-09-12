@@ -2568,7 +2568,9 @@ class DownloadService {
           }
           // 检查是否有对应的下载任务
           final hasCorrespondingTask = _tasks.any((task) {
-            final workDir = Directory('${downloadDir.path}/${task.workId}');
+            final workDir = Directory(
+              p.join(downloadDir.path, task.workId.toString()),
+            );
             final filePath = DownloadFilePathService.localPathForRelativePath(
               rootPath: workDir.path,
               relativePath: task.fileName,

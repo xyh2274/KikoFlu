@@ -773,6 +773,23 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     return value;
   }
 
+  /// 瀑布流间距（与原 grid 的 crossAxisSpacing/mainAxisSpacing 一致）
+  static const double _gridSpacing = 12;
+
+  /// 原 grid 的 maxCrossAxisExtent，用于等价推算瀑布流列数
+  static const double _targetCardWidth = 210;
+
+  /// 集合左右 padding 之和（fromLTRB 左右各 16）
+  static const double _gridHorizontalPadding = 32;
+
+  /// 按原 `SliverGridDelegateWithMaxCrossAxisExtent(210)` 的算法推算瀑布流列数，
+  /// 保证切到瀑布流后卡片宽度与改动前一致（1080px 屏 → 5 列）。
+  int _masonryColumnsFor(double availableWidth) {
+    final usableWidth = (availableWidth - _gridHorizontalPadding)
+        .clamp(0.0, double.infinity);
+    return (usableWidth / (_targetCardWidth + _gridSpacing)).ceil().clamp(1, 12);
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -822,70 +839,75 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
         return Stack(
           children: [
             Positioned.fill(
-              child: VirtualizedSliverCollection<int>(
-                collectionController: _collectionController,
-                pageStorageKey: const PageStorageKey('local-downloads-feed'),
-                items: currentPageWorkIds,
-                itemId: (workId) => workId,
-                layout: VirtualizedCollectionLayout.grid,
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 210,
-                  // 0.68（而非 0.72）：为紧凑卡片新增的标签行留出高度，
-                  // 避免标签/日期被固定 tile 底部裁剪
-                  childAspectRatio: 0.68,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                ),
-                padding: EdgeInsets.fromLTRB(16, toolbarTop + 60, 16, 16),
-                physics: ScrollOptimization.physics,
-                pagination: totalCount == 0
-                    ? null
-                    : VirtualizedPagination(
-                        currentPage: currentPage,
-                        pageSize: _pageSize,
-                        totalCount: totalCount,
-                        hasMore: currentPage < totalPages,
-                        isLoading: false,
-                        onPreviousPage: _previousPage,
-                        onNextPage: () => _nextPage(totalPages),
-                        onGoToPage: _goToPage,
-                        nextPageOnOverscroll: true,
-                        scrollToTop: false,
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // 瀑布流：tile 高度由卡片内容决定，标签多/标题长不再被固定高度
+                  // 裁剪（原 grid 用 childAspectRatio 写死 tile 高度，内容超出即裁掉）。
+                  final masonryColumns =
+                      _masonryColumnsFor(constraints.maxWidth);
+                  return VirtualizedSliverCollection<int>(
+                    collectionController: _collectionController,
+                    pageStorageKey:
+                        const PageStorageKey('local-downloads-feed'),
+                    items: currentPageWorkIds,
+                    itemId: (workId) => workId,
+                    layout: VirtualizedCollectionLayout.masonry,
+                    masonryCrossAxisCount: masonryColumns,
+                    masonryCrossAxisSpacing: _gridSpacing,
+                    masonryMainAxisSpacing: _gridSpacing,
+                    padding: EdgeInsets.fromLTRB(16, toolbarTop + 60, 16, 16),
+                    physics: ScrollOptimization.physics,
+                    pagination: totalCount == 0
+                        ? null
+                        : VirtualizedPagination(
+                            currentPage: currentPage,
+                            pageSize: _pageSize,
+                            totalCount: totalCount,
+                            hasMore: currentPage < totalPages,
+                            isLoading: false,
+                            onPreviousPage: _previousPage,
+                            onNextPage: () => _nextPage(totalPages),
+                            onGoToPage: _goToPage,
+                            nextPageOnOverscroll: true,
+                            scrollToTop: false,
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                          ),
+                    showEndIndicator: false,
+                    emptyBuilder: (context) => Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            allGroupedTasks.isEmpty
+                                ? Icons.download_outlined
+                                : Icons.search_off,
+                            size: 64,
+                            color: Theme.of(context).colorScheme.outline,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            allGroupedTasks.isEmpty
+                                ? S.of(context).noLocalDownloads
+                                : S.of(context).noResults,
+                            style: TextStyle(
+                              fontSize: 16,
+                              color:
+                                  Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
-                showEndIndicator: false,
-                emptyBuilder: (context) => Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        allGroupedTasks.isEmpty
-                            ? Icons.download_outlined
-                            : Icons.search_off,
-                        size: 64,
-                        color: Theme.of(context).colorScheme.outline,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        allGroupedTasks.isEmpty
-                            ? S.of(context).noLocalDownloads
-                            : S.of(context).noResults,
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                itemBuilder: (context, workId, index) {
-                  final workTasks = groupedTasks[workId]!;
-                  return _buildWorkCard(
-                    workId: workId,
-                    workTasks: workTasks,
-                    firstTask: _displayTask(workId, workTasks),
-                    isSelected: _selectedWorkIds.contains(workId),
-                    crossAxisCount: crossAxisCount,
+                    ),
+                    itemBuilder: (context, workId, index) {
+                      final workTasks = groupedTasks[workId]!;
+                      return _buildWorkCard(
+                        workId: workId,
+                        workTasks: workTasks,
+                        firstTask: _displayTask(workId, workTasks),
+                        isSelected: _selectedWorkIds.contains(workId),
+                        crossAxisCount: crossAxisCount,
+                      );
+                    },
                   );
                 },
               ),
