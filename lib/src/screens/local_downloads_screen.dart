@@ -1465,6 +1465,8 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
     final l10n = S.of(context);
     final cs = Theme.of(context).colorScheme;
     return AlertDialog(
+      // 收紧左右留白（默认 40），给作品标题更多横向空间
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       title: Row(
         children: [
           Expanded(child: Text(l10n.supplementPickWorksTitle)),
@@ -1484,6 +1486,9 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
         // 用 builder 按需构建：本地作品可能有几百个，每个行都要解析封面，
         // 一次性全建会同时发起几百个文件系统查询。
         child: ListView.builder(
+          // 不能复用外层的 PrimaryScrollController，否则会继承
+          // 已下载页面的滚动位置，弹窗一打开就停在列表中间
+          primary: false,
           itemCount: widget.works.length,
           itemBuilder: (context, index) {
             final w = widget.works[index];
@@ -1568,6 +1573,18 @@ class _SupplementDiffDialog extends StatefulWidget {
 }
 
 class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
+  /// 行条统一高度
+  static const double _rowHeight = 44;
+
+  /// 每层目录的缩进宽度
+  static const double _indentPerLevel = 16;
+
+  /// 勾选框槽位宽度（已存在的行也占位，保证列对齐）
+  static const double _checkSlotWidth = 26;
+
+  /// 图标槽位宽度
+  static const double _iconSlotWidth = 24;
+
   // 选中的缺失文件集合，key 格式: '$workId::$localRelativePath'
   // 注意：不提供"全选"入口——用户下载时通常只选取部分格式
   // （如 wav 或 mp3、有无音效），必须逐个/按文件夹手动勾选。
@@ -1664,7 +1681,7 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
   List<_TreeRow> _buildRows() {
     final rows = <_TreeRow>[];
     for (final w in widget.works) {
-      _appendRows(rows, w, w.tree, const []);
+      _appendRows(rows, w, w.tree, 0);
     }
     return rows;
   }
@@ -1673,44 +1690,15 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     List<_TreeRow> rows,
     _WorkSupplementEntry work,
     List<SupplementFileNode> nodes,
-    List<bool> chain,
+    int depth,
   ) {
-    for (var i = 0; i < nodes.length; i++) {
-      final node = nodes[i];
-      final isLast = i == nodes.length - 1;
-      final lastChain = [...chain, isLast];
-      rows.add(_TreeRow(
-        work: work,
-        node: node,
-        depth: chain.length,
-        lastChain: lastChain,
-      ));
+    for (final node in nodes) {
+      rows.add(_TreeRow(work: work, node: node, depth: depth));
       if (node.isFolder &&
           _expanded.contains(_key(work.workId, node.localRelativePath))) {
-        _appendRows(rows, work, node.children, lastChain);
+        _appendRows(rows, work, node.children, depth + 1);
       }
     }
-  }
-
-  // 层级引导线：每级缩进 20px，绘制竖线/拐角标明从属关系
-  Widget _buildGuides(_TreeRow row, Color color) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var i = 0; i < row.depth; i++)
-          SizedBox(
-            width: 20,
-            height: 40,
-            child: CustomPaint(
-              painter: _TreeGuidePainter(
-                hasSibling: !row.lastChain[i],
-                isCurrent: i == row.depth - 1,
-                color: color,
-              ),
-            ),
-          ),
-      ],
-    );
   }
 
   // 根据扩展名选择合适的文件图标
@@ -1749,137 +1737,161 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     return paths.length;
   }
 
-  // 渲染单行树节点（文件夹 / 已存在文件 / 缺失文件）
-  Widget _buildNodeRow(_TreeRow row) {
+  // 行标题：扩展名单独拆出来渲染，省略号只截断主干名，
+  // 不再把 .wav / .mp3 这类用来区分格式的关键后缀吃掉。
+  Widget _buildTitle(SupplementFileNode node) {
     final cs = Theme.of(context).colorScheme;
-    final node = row.node;
-    final guides = _buildGuides(row, cs.outlineVariant);
-
-    if (node.isFolder) {
-      final key = _key(row.work.workId, node.localRelativePath);
-      final expanded = _expanded.contains(key);
-      final state = _folderState(row.work, node);
-      final missing = _folderMissingCount(node);
-      return InkWell(
-        onTap: () => _toggleExpanded(row),
-        child: SizedBox(
-          height: 40,
-          child: Row(
-            children: [
-              guides,
-              const SizedBox(width: 2),
-              Checkbox(
-                value: state,
-                tristate: true,
-                onChanged: (v) => _toggleFolder(row.work, node, v == true),
-              ),
-              const SizedBox(width: 2),
-              Icon(
-                expanded ? Icons.folder_open : Icons.folder,
-                size: 18,
-                color: cs.tertiary,
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  node.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                missing > 0 ? S.of(context).supplementMissingCount(missing) : '',
-                style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-              ),
-              const SizedBox(width: 8),
-              Icon(
-                expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                size: 18,
-                color: cs.outline,
-              ),
-            ],
+    final style = TextStyle(
+      fontSize: 13,
+      fontWeight: node.isFolder ? FontWeight.w600 : FontWeight.w400,
+      color: node.exists && !node.isFolder ? cs.onSurfaceVariant : cs.onSurface,
+    );
+    final title = node.title;
+    final dot = node.isFolder ? -1 : title.lastIndexOf('.');
+    // 没有扩展名，或点号在首尾（隐藏文件 / 结尾点）时按普通文本渲染
+    if (dot <= 0 || dot >= title.length - 1) {
+      return Text(
+        title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style,
+      );
+    }
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            title.substring(0, dot),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: style,
           ),
         ),
+        Text(
+          title.substring(dot),
+          maxLines: 1,
+          style: style.copyWith(fontSize: 11, color: cs.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+
+  // 渲染单行条：文件夹 / 已存在文件 / 缺失文件共用同一套列宽，
+  // 右侧信息统一右对齐成一列；选中行整条高亮 + 左缘竖条。
+  Widget _buildNodeRow(_TreeRow row, {required bool showDivider}) {
+    final cs = Theme.of(context).colorScheme;
+    final l10n = S.of(context);
+    final node = row.node;
+
+    Widget? leading;
+    Widget? iconSlot;
+    Widget? meta;
+    VoidCallback? onTap;
+    var selectedRow = false;
+
+    if (node.isFolder) {
+      final folderKey = _key(row.work.workId, node.localRelativePath);
+      final expanded = _expanded.contains(folderKey);
+      final missing = _folderMissingCount(node);
+      leading = Checkbox(
+        value: _folderState(row.work, node),
+        tristate: true,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        onChanged: (v) => _toggleFolder(row.work, node, v == true),
       );
+      iconSlot = Icon(
+        expanded ? Icons.folder_open : Icons.folder,
+        size: 17,
+        color: cs.tertiary,
+      );
+      meta = Text(
+        missing > 0 ? l10n.supplementMissingCount(missing) : '',
+        style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+      );
+      onTap = () => _toggleExpanded(row);
+    } else if (node.exists) {
+      // 本地已存在：不可勾选；图标弱化，让"缺失可下载"的行更醒目
+      leading = Icon(Icons.check_circle, size: 17, color: cs.outline);
+      iconSlot = const SizedBox.shrink();
+      meta = Text(
+        l10n.supplementAlreadyExists,
+        style: TextStyle(fontSize: 11, color: cs.outline),
+      );
+    } else {
+      final fileKey = _key(row.work.workId, node.localRelativePath);
+      final selected = _selected.contains(fileKey);
+      selectedRow = selected;
+      leading = Checkbox(
+        value: selected,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        onChanged: (v) => _toggleFile(fileKey, v ?? false),
+      );
+      iconSlot = Icon(
+        _fileIcon(node.title),
+        size: 17,
+        color: cs.onSurfaceVariant,
+      );
+      meta = Text(
+        formatBytes(node.file?.size ?? 0),
+        style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+      );
+      onTap = () => _toggleFile(fileKey, !selected);
     }
 
-    if (node.exists) {
-      // 本地已存在：不可勾选，标记"已存在"
-      return SizedBox(
-        height: 40,
-        child: Row(
-          children: [
-            guides,
-            const SizedBox(width: 2),
-            const SizedBox(width: 40), // checkbox 占位
-            Icon(Icons.check_circle, size: 17, color: cs.primary),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                node.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: cs.primaryContainer.withValues(alpha: 0.5),
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: Text(
-                S.of(context).supplementAlreadyExists,
-                style: TextStyle(fontSize: 11, color: cs.onPrimaryContainer),
-              ),
-            ),
-            const SizedBox(width: 8),
-          ],
-        ),
-      );
-    }
-
-    // 缺失文件：可勾选
-    final key = _key(row.work.workId, node.localRelativePath);
-    final selected = _selected.contains(key);
-    return InkWell(
-      onTap: () => _toggleFile(key, !selected),
-      child: SizedBox(
-        height: 40,
-        child: Row(
-          children: [
-            guides,
-            const SizedBox(width: 2),
-            Checkbox(
-              value: selected,
-              onChanged: (v) => _toggleFile(key, v ?? false),
-            ),
-            const SizedBox(width: 2),
-            Icon(_fileIcon(node.title), size: 18, color: cs.onSurfaceVariant),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                node.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 13),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              formatBytes(node.file?.size ?? 0),
-              style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-            ),
-            const SizedBox(width: 8),
-          ],
-        ),
+    final rowContent = Container(
+      height: _rowHeight,
+      decoration: BoxDecoration(
+        border: showDivider
+            ? Border(
+                bottom: BorderSide(color: cs.outlineVariant, width: 0.5),
+              )
+            : null,
       ),
+      child: Row(
+        children: [
+          // 选中态左缘竖条：始终占位，避免选中时整行内容位移
+          Container(
+            width: 2,
+            height: _rowHeight,
+            color: selectedRow ? cs.primary : Colors.transparent,
+          ),
+          const SizedBox(width: 8),
+          SizedBox(width: _indentPerLevel * row.depth),
+          SizedBox(
+            width: _checkSlotWidth,
+            child: Align(alignment: Alignment.centerLeft, child: leading),
+          ),
+          SizedBox(
+            width: _iconSlotWidth,
+            child: Align(alignment: Alignment.centerLeft, child: iconSlot),
+          ),
+          Expanded(child: _buildTitle(node)),
+          const SizedBox(width: 8),
+          meta,
+          // 文件夹留出展开箭头位，文件行用等宽占位，保证右端对齐
+          if (node.isFolder)
+            Icon(
+              _expanded.contains(_key(row.work.workId, node.localRelativePath))
+                  ? Icons.keyboard_arrow_up
+                  : Icons.keyboard_arrow_down,
+              size: 18,
+              color: cs.outline,
+            )
+          else
+            const SizedBox(width: 18),
+        ],
+      ),
+    );
+
+    return Material(
+      color: selectedRow
+          ? cs.primaryContainer.withValues(alpha: 0.35)
+          : Colors.transparent,
+      child: onTap == null
+          ? rowContent
+          : InkWell(onTap: onTap, child: rowContent),
     );
   }
 
@@ -1888,15 +1900,12 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     final cs = Theme.of(context).colorScheme;
     final l10n = S.of(context);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.fromLTRB(10, 8, 12, 8),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            cs.primaryContainer.withValues(alpha: 0.85),
-            cs.surfaceContainerHighest.withValues(alpha: 0.5),
-          ],
+        color: cs.primaryContainer.withValues(alpha: 0.55),
+        border: Border(
+          bottom: BorderSide(color: cs.outlineVariant, width: 0.5),
         ),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
       ),
       child: Row(
         children: [
@@ -1904,36 +1913,43 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
             workId: work.workId,
             metadata: work.metadata,
             coverUrl: work.coverUrl,
+            width: 32,
+            height: 42,
           ),
           const SizedBox(width: 10),
-          // 标题占满整行宽度；缺失徽标放到标题下方，
-          // 否则徽标会把标题挤成每行 4-5 个字，反而更认不出是哪个作品。
+          // 标题 + RJ 号竖排；缺失徽标靠右，不再挤占标题宽度
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  '${index + 1}. ${work.workTitle} (${formatRJCode(work.workId)})',
-                  maxLines: 2,
+                  '${index + 1}. ${work.workTitle}',
+                  maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style:
-                      const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-                const SizedBox(height: 4),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: cs.errorContainer,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    l10n.supplementMissingCount(work.missingCount),
-                    style: TextStyle(fontSize: 11, color: cs.onErrorContainer),
-                  ),
+                const SizedBox(height: 1),
+                Text(
+                  formatRJCode(work.workId),
+                  style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: cs.errorContainer,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              l10n.supplementMissingCount(work.missingCount),
+              style: TextStyle(fontSize: 11, color: cs.onErrorContainer),
             ),
           ),
         ],
@@ -1951,53 +1967,77 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     for (final r in rows) {
       grouped.putIfAbsent(r.work.workId, () => []).add(r);
     }
+    final totalMissing =
+        widget.works.fold<int>(0, (sum, w) => sum + w.missingCount);
     return AlertDialog(
+      // 收紧左右留白（默认 40），行条内能多显示几个字符
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
       title: Text(l10n.supplementPickTitle),
+      contentPadding: EdgeInsets.zero,
       content: SizedBox(
         width: double.maxFinite,
         height: 520,
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  l10n.selectedCount(_selectedFileCount),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+            // 摘要条：已选数量 + 缺失总数并成一条，替代原来孤立的一行
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
+              color: cs.surfaceContainerHighest.withValues(alpha: 0.6),
+              child: Row(
+                children: [
+                  Text(
+                    l10n.selectedCount(_selectedFileCount),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Container(width: 1, height: 12, color: cs.outlineVariant),
+                  const SizedBox(width: 10),
+                  Text(
+                    l10n.supplementMissingCount(totalMissing),
+                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                  ),
+                ],
               ),
             ),
-            const Divider(height: 8),
             Expanded(
               // 按需构建分组卡片：封面解析只发生在可见的分组上
               child: ListView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+                // 独立滚动位置，避免继承外层页面的 PrimaryScrollController
+                primary: false,
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                 itemCount: widget.works.length,
                 itemBuilder: (context, i) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // 分组卡片：头部 + 树行
-                      Container(
-                        clipBehavior: Clip.antiAlias,
-                        decoration: BoxDecoration(
-                          border: Border.all(color: cs.outlineVariant),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _buildWorkHeader(widget.works[i], i),
-                            const Divider(height: 1),
-                            ...(grouped[widget.works[i].workId] ?? [])
-                                .map(_buildNodeRow),
-                          ],
-                        ),
+                  final work = widget.works[i];
+                  final workRows = grouped[work.workId] ?? const <_TreeRow>[];
+                  return Padding(
+                    padding: EdgeInsets.only(
+                      bottom: i != widget.works.length - 1 ? 12 : 0,
+                    ),
+                    // 分组卡片：标题条 + 行条
+                    child: Container(
+                      clipBehavior: Clip.antiAlias,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: cs.outlineVariant),
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                      if (i != widget.works.length - 1)
-                        const SizedBox(height: 12),
-                    ],
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _buildWorkHeader(work, i),
+                          for (var r = 0; r < workRows.length; r++)
+                            _buildNodeRow(
+                              workRows[r],
+                              showDivider: r != workRows.length - 1,
+                            ),
+                        ],
+                      ),
+                    ),
                   );
                 },
               ),
@@ -2012,7 +2052,7 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
         ),
         // 必须手动选择文件后才能补充下载（不提供"全部补全"），
         // 未选中任何文件时禁用
-        TextButton(
+        FilledButton(
           onPressed: _selectedFileCount == 0
               ? null
               : () {
@@ -2042,57 +2082,25 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
                   }
                   Navigator.pop(context, result);
                 },
-          child: Text(l10n.download),
+          child: Text(
+            _selectedFileCount == 0
+                ? l10n.download
+                : '${l10n.download} ${l10n.nFiles(_selectedFileCount)}',
+          ),
         ),
       ],
     );
   }
 }
 
-/// 平铺后的树行：记录所在作品、节点、层级深度与"是否最后子节点"链
+/// 平铺后的树行：记录所在作品、节点与层级深度
 class _TreeRow {
   final _WorkSupplementEntry work;
   final SupplementFileNode node;
   final int depth;
-  final List<bool> lastChain;
   const _TreeRow({
     required this.work,
     required this.node,
     required this.depth,
-    required this.lastChain,
   });
-}
-
-/// 树形引导线画笔：竖线 + 拐角横线，标明目录层级从属关系
-class _TreeGuidePainter extends CustomPainter {
-  final bool hasSibling; // 该层级之后是否还有兄弟节点（竖线需贯穿）
-  final bool isCurrent; // 是否为当前节点所在层级（需绘制横线拐角）
-  final Color color;
-  const _TreeGuidePainter({
-    required this.hasSibling,
-    required this.isCurrent,
-    required this.color,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 1.2;
-    final midY = size.height / 2;
-    final x = size.width / 2;
-    canvas.drawLine(Offset(x, 0), Offset(x, midY), paint);
-    if (hasSibling) {
-      canvas.drawLine(Offset(x, midY), Offset(x, size.height), paint);
-    }
-    if (isCurrent) {
-      canvas.drawLine(Offset(x, midY), Offset(size.width, midY), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_TreeGuidePainter oldDelegate) =>
-      oldDelegate.hasSibling != hasSibling ||
-      oldDelegate.isCurrent != isCurrent ||
-      oldDelegate.color != color;
 }
