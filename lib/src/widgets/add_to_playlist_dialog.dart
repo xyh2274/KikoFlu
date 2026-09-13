@@ -31,6 +31,77 @@ List<int> playlistPagesToScan({
   return [for (var page = 2; page <= totalPages; page++) page];
 }
 
+/// 会话级缓存：同一登录会话内反复打开弹窗时，播放列表清单与
+/// 成员检查结果直接复用，避免每次打开都全量重拉（播放列表最多
+/// 5 页、成员检查每列表还要翻页，是最耗时的两步）。
+///
+/// 失效策略：TTL 过期、登录 host 变化、增/删成功后增量同步
+/// （只改对应 (workId, playlistId) 的成员标记，不整体丢弃）。
+class _PlaylistDialogCache {
+  _PlaylistDialogCache._();
+  static final _PlaylistDialogCache instance = _PlaylistDialogCache._();
+
+  static const Duration _ttl = Duration(minutes: 5);
+
+  String? _host;
+  List<Playlist>? _playlists;
+  DateTime? _playlistsAt;
+
+  /// workId -> (playlistId -> 是否包含该作品)
+  final Map<int, Map<String, bool>> _membership = {};
+  final Map<int, DateTime> _membershipAt = {};
+
+  List<Playlist>? playlistsFor(String host) {
+    if (_host != host) return null;
+    final list = _playlists;
+    final at = _playlistsAt;
+    if (list == null || at == null) return null;
+    if (DateTime.now().difference(at) > _ttl) return null;
+    return List.of(list);
+  }
+
+  void storePlaylists(String host, List<Playlist> playlists) {
+    if (_host != host) {
+      _host = host;
+      _membership.clear();
+      _membershipAt.clear();
+    }
+    _playlists = List.of(playlists);
+    _playlistsAt = DateTime.now();
+  }
+
+  Map<String, bool>? membershipFor(String host, int workId) {
+    if (_host != host) return null;
+    final at = _membershipAt[workId];
+    if (at == null) return null;
+    if (DateTime.now().difference(at) > _ttl) {
+      _membership.remove(workId);
+      _membershipAt.remove(workId);
+      return null;
+    }
+    final result = _membership[workId];
+    return result == null ? null : Map.of(result);
+  }
+
+  void storeMembership(String host, int workId, Map<String, bool> result) {
+    if (_host != host) return;
+    _membership[workId] = Map.of(result);
+    _membershipAt[workId] = DateTime.now();
+  }
+
+  /// 增/删成功后增量同步对应成员标记
+  void updateMembership(
+    String host,
+    int workId,
+    String playlistId,
+    bool inPlaylist,
+  ) {
+    if (_host != host) return;
+    _membership.putIfAbsent(workId, () => {})[playlistId] = inPlaylist;
+    _membershipAt[workId] = DateTime.now();
+  }
+}
+
 /// 添加作品到播放列表的对话框
 class AddToPlaylistDialog extends ConsumerStatefulWidget {
   final int workId;
@@ -93,7 +164,22 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
   }
 
   /// 加载全部播放列表（遍历所有分页）
+  ///
+  /// 命中会话级缓存时直接复用，不再请求网络。
   Future<void> _loadAllPlaylists() async {
+    final host = ref.read(authProvider).host ?? '';
+    final cached = _PlaylistDialogCache.instance.playlistsFor(host);
+    if (cached != null) {
+      if (!mounted) return;
+      setState(() {
+        _allPlaylists = cached;
+        _isLoadingPlaylists = false;
+        _loadError = null;
+      });
+      _checkWorkMembership();
+      return;
+    }
+
     setState(() {
       _isLoadingPlaylists = true;
       _loadError = null;
@@ -130,6 +216,7 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
       }
 
       if (mounted) {
+        _PlaylistDialogCache.instance.storePlaylists(host, allPlaylists);
         setState(() {
           _allPlaylists = allPlaylists;
           _isLoadingPlaylists = false;
@@ -162,6 +249,22 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
   Future<void> _checkWorkMembership() async {
     if (_allPlaylists.isEmpty) return;
 
+    // 命中会话级缓存：直接回填，不再逐列表翻页检查
+    final host = ref.read(authProvider).host ?? '';
+    final cached =
+        _PlaylistDialogCache.instance.membershipFor(host, widget.workId);
+    if (cached != null) {
+      if (!mounted) return;
+      setState(() {
+        _checking.clear();
+        _inPlaylists
+          ..clear()
+          ..addAll(
+              cached.entries.where((e) => e.value).map((e) => e.key));
+      });
+      return;
+    }
+
     setState(() {
       _inPlaylists.clear();
       _checking
@@ -169,6 +272,7 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
         ..addAll(_allPlaylists.map((playlist) => playlist.id));
     });
 
+    final results = <String, bool>{};
     await Future.wait(_allPlaylists.map((playlist) async {
       bool found = false;
       try {
@@ -177,6 +281,7 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
         _log.debug('检查播放列表成员失败: ${playlist.displayName}, $e',
             tag: 'Playlist');
       }
+      results[playlist.id] = found;
       if (!mounted) return;
       setState(() {
         _checking.remove(playlist.id);
@@ -185,6 +290,7 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
         }
       });
     }));
+    _PlaylistDialogCache.instance.storeMembership(host, widget.workId, results);
   }
 
   /// 检查作品是否已在指定播放列表中
@@ -272,6 +378,14 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
         // 刷新播放列表列表（更新作品数量等信息）
         ref.read(playlistsProvider.notifier).refresh();
 
+        // 同步会话级缓存，避免下次打开仍显示"未收藏"
+        _PlaylistDialogCache.instance.updateMembership(
+          ref.read(authProvider).host ?? '',
+          widget.workId,
+          playlist.id,
+          true,
+        );
+
         // 更新本地状态
         setState(() {
           _inPlaylists.add(playlist.id);
@@ -313,6 +427,14 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
 
         // 刷新播放列表列表
         ref.read(playlistsProvider.notifier).refresh();
+
+        // 同步会话级缓存，避免下次打开仍显示"已收藏"
+        _PlaylistDialogCache.instance.updateMembership(
+          ref.read(authProvider).host ?? '',
+          widget.workId,
+          playlist.id,
+          false,
+        );
 
         // 更新本地状态
         setState(() {
