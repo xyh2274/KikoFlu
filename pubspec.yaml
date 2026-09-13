@@ -92,6 +92,7 @@ dependencies:
   ffi: ^2.1.4
   real_liquid_glass:
     path: third_party/real_liquid_glass
+  flutter_local_notifications: ^22.3.1
 
 dev_dependencies:
   flutter_test:
