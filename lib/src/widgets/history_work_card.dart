@@ -88,7 +88,11 @@ class HistoryWorkCard extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Cover
-            Expanded(
+            // 瀑布流下 tile 高度由内容决定，封面不再用 Expanded（那依赖
+            // 固定高度的 grid tile），改用 AspectRatio 锁定原 0.72 视觉比例，
+            // 信息区按内容自然撑开，不再被裁剪
+            AspectRatio(
+              aspectRatio: 0.72,
               child: Stack(
                 fit: StackFit.expand,
                 children: [

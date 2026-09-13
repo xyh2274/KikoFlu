@@ -32,13 +32,12 @@ class HistoryScreen extends ConsumerWidget {
       body: VirtualizedSliverCollection(
         items: history,
         itemId: (record) => record.work.id,
-        layout: VirtualizedCollectionLayout.grid,
-        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-          maxCrossAxisExtent: 210,
-          childAspectRatio: 0.72,
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
-        ),
+        // 瀑布流：tile 高度由卡片内容决定（封面锁 0.72 比例），与已下载页
+        // 同款方案；原 grid 的 childAspectRatio 会把信息区裁剪掉
+        layout: VirtualizedCollectionLayout.masonry,
+        masonryCrossAxisCount: crossAxisCount,
+        masonryCrossAxisSpacing: 12,
+        masonryMainAxisSpacing: 12,
         padding: const EdgeInsets.all(16),
         physics: ScrollOptimization.physics,
         isInitialLoading: historyState.isLoading && history.isEmpty,
