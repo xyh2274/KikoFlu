@@ -1634,6 +1634,11 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
 
       walk(w.tree);
     }
+    // 同时对比多个音声时默认收起全部作品，只留标题条做总览，
+    // 避免几棵完整文件树一起铺开显得杂乱；单音声则保持全展开直接挑选
+    if (widget.works.length > 1) {
+      _collapsedWorks.addAll(widget.works.map((w) => w.workId));
+    }
   }
 
   // 收集节点下所有缺失文件的路径
