@@ -1499,7 +1499,7 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
               controlAffinity: ListTileControlAffinity.leading,
               title: Text(
                 w.workTitle,
-                maxLines: 1,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
               subtitle: Text(
@@ -1906,24 +1906,34 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
             coverUrl: work.coverUrl,
           ),
           const SizedBox(width: 10),
+          // 标题占满整行宽度；缺失徽标放到标题下方，
+          // 否则徽标会把标题挤成每行 4-5 个字，反而更认不出是哪个作品。
           Expanded(
-            child: Text(
-              '${index + 1}. ${work.workTitle} (${formatRJCode(work.workId)})',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: cs.errorContainer,
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              l10n.supplementMissingCount(work.missingCount),
-              style: TextStyle(fontSize: 11, color: cs.onErrorContainer),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${index + 1}. ${work.workTitle} (${formatRJCode(work.workId)})',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: cs.errorContainer,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    l10n.supplementMissingCount(work.missingCount),
+                    style: TextStyle(fontSize: 11, color: cs.onErrorContainer),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
