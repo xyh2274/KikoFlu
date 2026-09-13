@@ -617,6 +617,12 @@ class SZh extends S {
   String get deselectAll => '取消全选';
 
   @override
+  String get collapseAll => '全部收起';
+
+  @override
+  String get expandAll => '全部展开';
+
+  @override
   String get select => '选择';
 
   @override
@@ -4347,6 +4353,12 @@ class SZhHant extends SZh {
 
   @override
   String get deselectAll => '取消全選';
+
+  @override
+  String get collapseAll => '全部收起';
+
+  @override
+  String get expandAll => '全部展開';
 
   @override
   String get select => '選擇';

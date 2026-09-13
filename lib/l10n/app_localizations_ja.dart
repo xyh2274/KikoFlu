@@ -619,6 +619,12 @@ class SJa extends S {
   String get deselectAll => '選択解除';
 
   @override
+  String get collapseAll => 'すべて折りたたむ';
+
+  @override
+  String get expandAll => 'すべて展開';
+
+  @override
   String get select => '選択';
 
   @override

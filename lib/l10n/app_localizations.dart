@@ -1272,6 +1272,18 @@ abstract class S {
   /// **'Deselect All'**
   String get deselectAll;
 
+  /// No description provided for @collapseAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse All'**
+  String get collapseAll;
+
+  /// No description provided for @expandAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Expand All'**
+  String get expandAll;
+
   /// No description provided for @select.
   ///
   /// In en, this message translates to:

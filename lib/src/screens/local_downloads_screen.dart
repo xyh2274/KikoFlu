@@ -1591,8 +1591,30 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
   final Set<String> _selected = {};
   // 展开的文件夹集合（默认全部展开）
   final Set<String> _expanded = {};
+  // 收起的作品集合（默认全部展开）：点分组头或「全部收起」切换，
+  // 收起后只留标题条，一屏能看到更多音声
+  final Set<int> _collapsedWorks = {};
 
   int get _selectedFileCount => _selected.length;
+
+  /// 是否所有作品都处于展开状态（决定标题行按钮显示「全部收起」还是「全部展开」）
+  bool get _allWorksExpanded => _collapsedWorks.isEmpty;
+
+  void _toggleWorkCollapsed(int workId) {
+    setState(() {
+      if (!_collapsedWorks.remove(workId)) _collapsedWorks.add(workId);
+    });
+  }
+
+  void _toggleAllWorksExpanded() {
+    setState(() {
+      if (_collapsedWorks.isEmpty) {
+        _collapsedWorks.addAll(widget.works.map((w) => w.workId));
+      } else {
+        _collapsedWorks.clear();
+      }
+    });
+  }
 
   String _key(int workId, String path) => '$workId::$path';
 
@@ -1895,64 +1917,78 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     );
   }
 
-  // 作品分组头部：渐变底色 + 序号 + 缺失徽标，强化多音声区分
+  // 作品分组头部：标题条（封面 + 序号 + 缺失徽标），点按可收起/展开该音声，
+  // 收起后只留这一条，一屏能容纳更多音声
   Widget _buildWorkHeader(_WorkSupplementEntry work, int index) {
     final cs = Theme.of(context).colorScheme;
     final l10n = S.of(context);
+    final collapsed = _collapsedWorks.contains(work.workId);
     return Container(
       padding: const EdgeInsets.fromLTRB(10, 8, 12, 8),
       decoration: BoxDecoration(
         color: cs.primaryContainer.withValues(alpha: 0.55),
         border: Border(
-          bottom: BorderSide(color: cs.outlineVariant, width: 0.5),
+          // 收起时没有行条，底边不需要分隔线
+          bottom: collapsed
+              ? BorderSide.none
+              : BorderSide(color: cs.outlineVariant, width: 0.5),
         ),
       ),
-      child: Row(
-        children: [
-          _WorkCoverThumb(
-            workId: work.workId,
-            metadata: work.metadata,
-            coverUrl: work.coverUrl,
-            width: 32,
-            height: 42,
-          ),
-          const SizedBox(width: 10),
-          // 标题 + RJ 号竖排；缺失徽标靠右，不再挤占标题宽度
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '${index + 1}. ${work.workTitle}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+      child: InkWell(
+        onTap: () => _toggleWorkCollapsed(work.workId),
+        child: Row(
+          children: [
+            _WorkCoverThumb(
+              workId: work.workId,
+              metadata: work.metadata,
+              coverUrl: work.coverUrl,
+              width: 32,
+              height: 42,
+            ),
+            const SizedBox(width: 10),
+            // 标题 + RJ 号竖排；缺失徽标靠右，不再挤占标题宽度
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${index + 1}. ${work.workTitle}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 1),
-                Text(
-                  formatRJCode(work.workId),
-                  style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-                ),
-              ],
+                  const SizedBox(height: 1),
+                  Text(
+                    formatRJCode(work.workId),
+                    style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            decoration: BoxDecoration(
-              color: cs.errorContainer,
-              borderRadius: BorderRadius.circular(999),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: cs.errorContainer,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(
+                l10n.supplementMissingCount(work.missingCount),
+                style: TextStyle(fontSize: 11, color: cs.onErrorContainer),
+              ),
             ),
-            child: Text(
-              l10n.supplementMissingCount(work.missingCount),
-              style: TextStyle(fontSize: 11, color: cs.onErrorContainer),
+            // 展开状态箭头，与文件夹行一致：展开朝上、收起朝下
+            Icon(
+              collapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
+              size: 18,
+              color: cs.outline,
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1980,10 +2016,11 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
         height: 520,
         child: Column(
           children: [
-            // 摘要条：已选数量 + 缺失总数并成一条，替代原来孤立的一行
+            // 摘要条：已选数量 + 缺失总数并成一条，替代原来孤立的一行；
+            // 右侧放「全部收起/全部展开」，收起后每音声只剩标题条方便总览
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 9),
+              padding: const EdgeInsets.fromLTRB(20, 4, 8, 4),
               color: cs.surfaceContainerHighest.withValues(alpha: 0.6),
               child: Row(
                 children: [
@@ -2002,6 +2039,22 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
                     l10n.supplementMissingCount(totalMissing),
                     style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
                   ),
+                  const Spacer(),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onPressed: _toggleAllWorksExpanded,
+                    icon: Icon(
+                      _allWorksExpanded ? Icons.unfold_less : Icons.unfold_more,
+                      size: 16,
+                    ),
+                    label: Text(
+                      _allWorksExpanded ? l10n.collapseAll : l10n.expandAll,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -2014,7 +2067,11 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
                 itemCount: widget.works.length,
                 itemBuilder: (context, i) {
                   final work = widget.works[i];
-                  final workRows = grouped[work.workId] ?? const <_TreeRow>[];
+                  // 收起的作品不渲染行条，只留标题条
+                  final collapsed = _collapsedWorks.contains(work.workId);
+                  final workRows = collapsed
+                      ? const <_TreeRow>[]
+                      : (grouped[work.workId] ?? const <_TreeRow>[]);
                   return Padding(
                     padding: EdgeInsets.only(
                       bottom: i != widget.works.length - 1 ? 12 : 0,

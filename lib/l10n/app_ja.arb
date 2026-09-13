@@ -222,6 +222,8 @@
   "selectedCount": "{count}件選択中",
   "selectAll": "すべて選択",
   "deselectAll": "選択解除",
+  "collapseAll": "すべて折りたたむ",
+  "expandAll": "すべて展開",
   "select": "選択",
   "noDownloadTasks": "ダウンロードタスクはありません",
   "nFiles": "{count}ファイル",

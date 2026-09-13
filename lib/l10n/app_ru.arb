@@ -222,6 +222,8 @@
   "selectedCount": "Выбрано: {count}",
   "selectAll": "Выбрать все",
   "deselectAll": "Снять выделение",
+  "collapseAll": "Свернуть все",
+  "expandAll": "Развернуть все",
   "select": "Выбрать",
   "noDownloadTasks": "Нет задач загрузки",
   "nFiles": "{count} файлов",

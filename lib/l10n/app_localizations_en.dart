@@ -634,6 +634,12 @@ class SEn extends S {
   String get deselectAll => 'Deselect All';
 
   @override
+  String get collapseAll => 'Collapse All';
+
+  @override
+  String get expandAll => 'Expand All';
+
+  @override
   String get select => 'Select';
 
   @override

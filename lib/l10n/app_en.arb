@@ -278,6 +278,8 @@
   },
   "selectAll": "Select All",
   "deselectAll": "Deselect All",
+  "collapseAll": "Collapse All",
+  "expandAll": "Expand All",
   "select": "Select",
   "noDownloadTasks": "No download tasks",
   "nFiles": "{count} files",

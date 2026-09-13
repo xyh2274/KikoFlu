@@ -222,6 +222,8 @@
   "selectedCount": "已選擇 {count} 項",
   "selectAll": "全選",
   "deselectAll": "取消全選",
+  "collapseAll": "全部收起",
+  "expandAll": "全部展開",
   "select": "選擇",
   "noDownloadTasks": "暫無下載任務",
   "nFiles": "{count} 個檔案",

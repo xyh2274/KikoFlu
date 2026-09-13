@@ -637,6 +637,12 @@ class SRu extends S {
   String get deselectAll => 'Снять выделение';
 
   @override
+  String get collapseAll => 'Свернуть все';
+
+  @override
+  String get expandAll => 'Развернуть все';
+
+  @override
   String get select => 'Выбрать';
 
   @override
