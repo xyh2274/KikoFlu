@@ -581,6 +581,14 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     return _diskWorks[workId];
   }
 
+  /// 作品封面地址：复用 [Work.getCoverImageUrl] 的 URL 规则，
+  /// 但只用一个带 id 的空 Work（不走 fromJson + 深层清洗，
+  /// 避免为几百个作品构造封面地址时做无谓的元数据解析）。
+  String? _coverUrlForWorkId(int workId, String host, String token) {
+    if (host.isEmpty) return null;
+    return Work(id: workId, title: '').getCoverImageUrl(host, token: token);
+  }
+
   // 顶部"补充下载"：先多选要对比的音声（支持全选），再对比所选并补充下载
   Future<void> _pickWorksForSupplement(
       Map<int, List<DownloadTask>> groupedTasks) async {
@@ -598,16 +606,18 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       return;
     }
 
-    final entries = [
-      for (final workId in workIds)
-        _WorkPickEntry(
-          workId: workId,
-          workTitle: (() {
-            final meta = _metadataForWork(workId, groupedTasks);
-            return (meta?['title'] as String?) ?? 'RJ$workId';
-          })(),
-        ),
-    ];
+    final host = authState.host ?? '';
+    final token = authState.token ?? '';
+    final entries = <_WorkPickEntry>[];
+    for (final workId in workIds) {
+      final metadata = _metadataForWork(workId, groupedTasks);
+      entries.add(_WorkPickEntry(
+        workId: workId,
+        workTitle: (metadata?['title'] as String?) ?? 'RJ$workId',
+        metadata: metadata,
+        coverUrl: _coverUrlForWorkId(workId, host, token),
+      ));
+    }
 
     final selected = await showDialog<List<int>>(
       context: context,
@@ -674,6 +684,8 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
           workTitle: (metadata?['title'] as String?) ?? 'RJ$workId',
           tree: result.tree,
           missingCount: result.missing.length,
+          metadata: metadata,
+          coverUrl: _coverUrlForWorkId(workId, host, token),
         ));
       }
 
@@ -695,19 +707,16 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       );
       if (!mounted || selectedMap == null || selectedMap.isEmpty) return;
 
-      // 按作品执行补充下载
+      // 按作品执行补充下载（复用对比阶段已取到的元数据与封面地址）
       int totalAdded = 0;
-      for (final entry in selectedMap.entries) {
-        final metadata = _metadataForWork(entry.key, groupedTasks);
-        final work = metadata != null
-            ? Work.fromJson(_sanitizeMetadata(metadata))
-            : null;
-        final coverUrl = work?.getCoverImageUrl(host, token: token);
+      for (final entry in entries) {
+        final files = selectedMap[entry.workId];
+        if (files == null || files.isEmpty) continue;
         totalAdded += await DownloadService.instance.supplementDownloads(
-          entry.key,
-          entry.value,
-          workMetadata: metadata,
-          coverUrl: coverUrl,
+          entry.workId,
+          files,
+          workMetadata: entry.metadata,
+          coverUrl: entry.coverUrl,
         );
       }
       if (!mounted) return;
@@ -1298,12 +1307,126 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
   }
 }
 
+/// 作品封面缩略图：优先本地已下载的封面文件（离线可用、无需网络），
+/// 否则回退到网络封面（走磁盘缓存），最后回退到占位图标。
+///
+/// 用于「选择音声 / 差异对比」对话框——那里只有标题和 RJ 号，
+/// 同名作品或元数据缺标题时会分不清是哪一个。
+class _WorkCoverThumb extends StatefulWidget {
+  final int workId;
+  final Map<String, dynamic>? metadata;
+  final String? coverUrl;
+  final double width;
+  final double height;
+
+  const _WorkCoverThumb({
+    required this.workId,
+    this.metadata,
+    this.coverUrl,
+    this.width = 44,
+    this.height = 58,
+  });
+
+  @override
+  State<_WorkCoverThumb> createState() => _WorkCoverThumbState();
+}
+
+class _WorkCoverThumbState extends State<_WorkCoverThumb> {
+  String? _localCoverPath;
+  bool _resolved = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveLocalCover();
+  }
+
+  Future<void> _resolveLocalCover() async {
+    final metadata = widget.metadata;
+    final relative = metadata?['localCoverPath'];
+    if (metadata == null || relative is! String || relative.isEmpty) {
+      _resolved = true;
+      return;
+    }
+    String? path;
+    try {
+      final dir = await DownloadService.instance
+          .getWorkDirectory(widget.workId, metadata: metadata);
+      path = DownloadService.instance.localCoverPathForMetadata(dir, metadata);
+    } catch (_) {
+      path = null; // 本地封面不可用时静默回退到网络封面
+    }
+    if (!mounted) return;
+    setState(() {
+      _resolved = true;
+      if (path != null && File(path).existsSync()) {
+        _localCoverPath = path;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final placeholder = Container(
+      color: cs.surfaceContainerHighest,
+      alignment: Alignment.center,
+      child: Icon(
+        Icons.album_outlined,
+        size: widget.width * 0.45,
+        color: cs.outline,
+      ),
+    );
+
+    Widget image;
+    if (_localCoverPath != null) {
+      image = Image.file(
+        File(_localCoverPath!),
+        fit: BoxFit.cover,
+        width: widget.width,
+        height: widget.height,
+        errorBuilder: (_, __, ___) => placeholder,
+      );
+    } else if (_resolved && (widget.coverUrl ?? '').isNotEmpty) {
+      image = CachedNetworkImage(
+        imageUrl: widget.coverUrl!,
+        httpHeaders: StorageService.serverCookieHeaders,
+        fit: BoxFit.cover,
+        width: widget.width,
+        height: widget.height,
+        placeholder: (_, __) => placeholder,
+        errorWidget: (_, __, ___) => placeholder,
+      );
+    } else {
+      // 本地封面尚未解析出来时也先占位，避免布局跳动
+      image = placeholder;
+    }
+
+    return SizedBox(
+      width: widget.width,
+      height: widget.height,
+      child: PrivacyBlurCover(
+        borderRadius: BorderRadius.circular(6),
+        sigma: 10,
+        child: image,
+      ),
+    );
+  }
+}
+
 /// 差异对比条目：一个音声作品及其在线完整文件树（含本地存在状态）
 /// 可选择的本地音声条目
 class _WorkPickEntry {
   final int workId;
   final String workTitle;
-  const _WorkPickEntry({required this.workId, required this.workTitle});
+  final Map<String, dynamic>? metadata; // 用于取本地封面文件
+  final String? coverUrl; // 网络封面兜底地址
+  const _WorkPickEntry({
+    required this.workId,
+    required this.workTitle,
+    this.metadata,
+    this.coverUrl,
+  });
 }
 
 /// 选择要对比的音声对话框：多选（默认全选），支持全选/取消全选
@@ -1358,31 +1481,40 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
       content: SizedBox(
         width: double.maxFinite,
         height: 400,
-        child: ListView(
-          children: [
-            for (final w in widget.works)
-              CheckboxListTile(
-                value: _selected.contains(w.workId),
-                onChanged: (v) => setState(() {
-                  if (v == true) {
-                    _selected.add(w.workId);
-                  } else {
-                    _selected.remove(w.workId);
-                  }
-                }),
-                controlAffinity: ListTileControlAffinity.leading,
-                title: Text(
-                  w.workTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  formatRJCode(w.workId),
-                  style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-                ),
-                secondary: Icon(Icons.album_outlined, color: cs.primary),
+        // 用 builder 按需构建：本地作品可能有几百个，每个行都要解析封面，
+        // 一次性全建会同时发起几百个文件系统查询。
+        child: ListView.builder(
+          itemCount: widget.works.length,
+          itemBuilder: (context, index) {
+            final w = widget.works[index];
+            return CheckboxListTile(
+              value: _selected.contains(w.workId),
+              onChanged: (v) => setState(() {
+                if (v == true) {
+                  _selected.add(w.workId);
+                } else {
+                  _selected.remove(w.workId);
+                }
+              }),
+              controlAffinity: ListTileControlAffinity.leading,
+              title: Text(
+                w.workTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-          ],
+              subtitle: Text(
+                formatRJCode(w.workId),
+                style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+              ),
+              secondary: _WorkCoverThumb(
+                workId: w.workId,
+                metadata: w.metadata,
+                coverUrl: w.coverUrl,
+                width: 36,
+                height: 48,
+              ),
+            );
+          },
         ),
       ),
       actions: [
@@ -1411,11 +1543,15 @@ class _WorkSupplementEntry {
   final String workTitle;
   final List<SupplementFileNode> tree; // 在线完整文件树（根目录开始）
   final int missingCount; // 缺失文件数
+  final Map<String, dynamic>? metadata; // 本地封面 + 后续入队复用
+  final String? coverUrl; // 网络封面兜底地址
   const _WorkSupplementEntry({
     required this.workId,
     required this.workTitle,
     required this.tree,
     required this.missingCount,
+    this.metadata,
+    this.coverUrl,
   });
 }
 
@@ -1764,25 +1900,16 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
       ),
       child: Row(
         children: [
-          CircleAvatar(
-            radius: 12,
-            backgroundColor: cs.primary,
-            child: Text(
-              '${index + 1}',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                color: cs.onPrimary,
-              ),
-            ),
+          _WorkCoverThumb(
+            workId: work.workId,
+            metadata: work.metadata,
+            coverUrl: work.coverUrl,
           ),
           const SizedBox(width: 10),
-          Icon(Icons.album_outlined, size: 18, color: cs.primary),
-          const SizedBox(width: 6),
           Expanded(
             child: Text(
-              '${work.workTitle} (${formatRJCode(work.workId)})',
-              maxLines: 1,
+              '${index + 1}. ${work.workTitle} (${formatRJCode(work.workId)})',
+              maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
             ),
@@ -1833,31 +1960,36 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
             ),
             const Divider(height: 8),
             Expanded(
-              child: ListView(
+              // 按需构建分组卡片：封面解析只发生在可见的分组上
+              child: ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                children: [
-                  for (var i = 0; i < widget.works.length; i++) ...[
-                    // 分组卡片：头部 + 树行
-                    Container(
-                      clipBehavior: Clip.antiAlias,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: cs.outlineVariant),
-                        borderRadius: BorderRadius.circular(12),
+                itemCount: widget.works.length,
+                itemBuilder: (context, i) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // 分组卡片：头部 + 树行
+                      Container(
+                        clipBehavior: Clip.antiAlias,
+                        decoration: BoxDecoration(
+                          border: Border.all(color: cs.outlineVariant),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _buildWorkHeader(widget.works[i], i),
+                            const Divider(height: 1),
+                            ...(grouped[widget.works[i].workId] ?? [])
+                                .map(_buildNodeRow),
+                          ],
+                        ),
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          _buildWorkHeader(widget.works[i], i),
-                          const Divider(height: 1),
-                          ...(grouped[widget.works[i].workId] ?? [])
-                              .map(_buildNodeRow),
-                        ],
-                      ),
-                    ),
-                    if (i != widget.works.length - 1)
-                      const SizedBox(height: 12),
-                  ],
-                ],
+                      if (i != widget.works.length - 1)
+                        const SizedBox(height: 12),
+                    ],
+                  );
+                },
               ),
             ),
           ],
