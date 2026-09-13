@@ -691,6 +691,8 @@
   "supplementMissingCount": "缺失 {count} 项",
   "supplementDownloadNeedServer": "需要先配置服务器地址才能补充下载",
   "supplementComparing": "正在对比在线与本地文件...",
+  "supplementComparingProgress": "正在对比 {count}/{total} 个音声...",
+  "supplementCompareFailed": "{count} 个音声对比失败，已跳过",
   "supplementCheckFailed": "对比在线文件失败: {error}",
   "noFilesNeedSupplement": "本地文件完整，无需补充下载",
   "supplementConfirmContent": "发现 {count} 个缺失文件（共 {size}），是否加入下载队列？",

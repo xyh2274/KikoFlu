@@ -694,6 +694,8 @@
   "supplementMissingCount": "欠落 {count} 件",
   "supplementDownloadNeedServer": "補充ダウンロードにはサーバーアドレスの設定が必要です",
   "supplementComparing": "オンラインとローカルのファイルを比較中...",
+  "supplementComparingProgress": "音声を比較中 {count}/{total}...",
+  "supplementCompareFailed": "{count} 件の音声の比較に失敗し、スキップしました",
   "supplementCheckFailed": "オンラインファイルの比較に失敗: {error}",
   "noFilesNeedSupplement": "ローカルファイルは完全で、補充は不要です",
   "supplementConfirmContent": "{count} 個の欠落ファイル（合計 {size}）を検出しました。ダウンロードキューに追加しますか？",

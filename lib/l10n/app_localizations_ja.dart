@@ -1962,6 +1962,16 @@ class SJa extends S {
   String get supplementComparing => 'オンラインとローカルのファイルを比較中...';
 
   @override
+  String supplementComparingProgress(Object count, Object total) {
+    return '音声を比較中 $count/$total...';
+  }
+
+  @override
+  String supplementCompareFailed(Object count) {
+    return '$count 件の音声の比較に失敗し、スキップしました';
+  }
+
+  @override
   String supplementCheckFailed(Object error) {
     return 'オンラインファイルの比較に失敗: $error';
   }

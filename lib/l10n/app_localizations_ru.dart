@@ -2016,6 +2016,16 @@ class SRu extends S {
   String get supplementComparing => 'Сравнение онлайн и локальных файлов...';
 
   @override
+  String supplementComparingProgress(Object count, Object total) {
+    return 'Сравнение $count/$total...';
+  }
+
+  @override
+  String supplementCompareFailed(Object count) {
+    return 'Не удалось сравнить $count работ(ы), пропущено';
+  }
+
+  @override
   String supplementCheckFailed(Object error) {
     return 'Не удалось сравнить онлайн-файлы: $error';
   }

@@ -683,6 +683,8 @@
   "supplementMissingCount": "缺失 {count} 項",
   "supplementDownloadNeedServer": "需要先設定伺服器位址才能補充下載",
   "supplementComparing": "正在比對線上與本機檔案...",
+  "supplementComparingProgress": "正在對比 {count}/{total} 個音聲...",
+  "supplementCompareFailed": "{count} 個音聲對比失敗，已跳過",
   "supplementCheckFailed": "比對線上檔案失敗: {error}",
   "noFilesNeedSupplement": "本機檔案完整，無需補充下載",
   "supplementConfirmContent": "發現 {count} 個缺失檔案（共 {size}），是否加入下載佇列？",

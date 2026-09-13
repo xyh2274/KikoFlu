@@ -884,6 +884,8 @@
   "supplementMissingCount": "{count} missing",
   "supplementDownloadNeedServer": "Configure a server address first to use supplement download",
   "supplementComparing": "Comparing online and local files...",
+  "supplementComparingProgress": "Comparing {count}/{total} works...",
+  "supplementCompareFailed": "{count} work(s) failed to compare and were skipped",
   "supplementCheckFailed": "Failed to compare online files: {error}",
   "noFilesNeedSupplement": "Local files are complete, no supplement needed",
   "supplementConfirmContent": "Found {count} missing files ({size} total). Add them to the download queue?",

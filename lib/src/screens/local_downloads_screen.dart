@@ -631,6 +631,9 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     await _supplementDownloadSelected(groupedTasks, selected);
   }
 
+  /// 补充下载对比的并发批大小（与「添加到播放列表」的并发口径一致）
+  static const int _supplementCompareConcurrency = 6;
+
   // 多音声差异对比：对比所选音声的在线/本地文件，树形展示并补充下载
   Future<void> _supplementDownloadSelected(
       Map<int, List<DownloadTask>> groupedTasks, List<int> workIds) async {
@@ -644,27 +647,55 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       return;
     }
 
-    // 显示对比进度对话框
+    // 显示对比进度对话框：显示 x/y 进度且可取消（全量对比可能要几十秒）
     var dialogOpen = false;
+    var cancelled = false;
+    var comparedCount = 0;
+    StateSetter? dialogSetState;
     if (mounted) {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => PopScope(
+        builder: (dialogContext) => PopScope(
           canPop: false,
-          child: AlertDialog(
-            content: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2.5),
+          child: StatefulBuilder(
+            builder: (context, setDialogState) {
+              dialogSetState = setDialogState;
+              return AlertDialog(
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2.5),
+                        ),
+                        const SizedBox(width: 16),
+                        Flexible(
+                          child: Text(
+                            comparedCount == 0
+                                ? l10n.supplementComparing
+                                : l10n.supplementComparingProgress(
+                                    comparedCount, workIds.length),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: () {
+                        cancelled = true;
+                        Navigator.of(dialogContext).pop();
+                      },
+                      child: Text(l10n.cancel),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 16),
-                Flexible(child: Text(l10n.supplementComparing)),
-              ],
-            ),
+              );
+            },
           ),
         ),
       );
@@ -672,22 +703,45 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     }
 
     try {
-      // 逐个作品对比，汇总有缺失的作品
+      // 并发批对比：147 个作品串行要 3 分钟以上，改成每批 6 个并发后
+      // 耗时压缩到十几秒量级；每批结束刷新进度并检查取消标志
       final entries = <_WorkSupplementEntry>[];
-      for (final workId in workIds) {
-        final result = await DownloadService.instance
-            .checkSupplementDiff(workId);
-        if (result.error != null || result.missing.isEmpty) continue;
-        final metadata = _metadataForWork(workId, groupedTasks);
-        entries.add(_WorkSupplementEntry(
-          workId: workId,
-          workTitle: (metadata?['title'] as String?) ?? 'RJ$workId',
-          tree: result.tree,
-          missingCount: result.missing.length,
-          metadata: metadata,
-          coverUrl: _coverUrlForWorkId(workId, host, token),
-        ));
+      final failedWorkIds = <int>[];
+      for (var i = 0;
+          i < workIds.length && !cancelled;
+          i += _supplementCompareConcurrency) {
+        final batchEnd =
+            (i + _supplementCompareConcurrency).clamp(0, workIds.length);
+        final batch = workIds.sublist(i, batchEnd);
+        final results = await Future.wait(batch.map((workId) =>
+            DownloadService.instance.checkSupplementDiff(workId)));
+        // 等待本批期间用户可能已取消：直接丢弃结果
+        if (cancelled) break;
+        for (var j = 0; j < batch.length; j++) {
+          final workId = batch[j];
+          final result = results[j];
+          if (result.error != null) {
+            // 对比失败（如服务器已删除）不再静默跳过，最后统一汇报
+            failedWorkIds.add(workId);
+            continue;
+          }
+          if (result.missing.isEmpty) continue;
+          final metadata = _metadataForWork(workId, groupedTasks);
+          entries.add(_WorkSupplementEntry(
+            workId: workId,
+            workTitle: (metadata?['title'] as String?) ?? 'RJ$workId',
+            tree: result.tree,
+            missingCount: result.missing.length,
+            metadata: metadata,
+            coverUrl: _coverUrlForWorkId(workId, host, token),
+          ));
+        }
+        comparedCount = batchEnd;
+        dialogSetState?.call(() {});
       }
+
+      // 用户取消：进度框已随取消按钮关闭，直接退出
+      if (cancelled) return;
 
       if (!mounted) return;
       if (dialogOpen) {
@@ -696,7 +750,12 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       }
 
       if (entries.isEmpty) {
-        SnackBarUtil.showSuccess(context, l10n.noFilesNeedSupplement);
+        if (failedWorkIds.isNotEmpty) {
+          SnackBarUtil.showError(
+              context, l10n.supplementCompareFailed(failedWorkIds.length));
+        } else {
+          SnackBarUtil.showSuccess(context, l10n.noFilesNeedSupplement);
+        }
         return;
       }
 
@@ -720,12 +779,18 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
         );
       }
       if (!mounted) return;
-      SnackBarUtil.showSuccess(
-        context,
-        totalAdded > 0
-            ? l10n.addedNFilesToDownloadQueue(totalAdded)
-            : l10n.noFilesNeedSupplement,
-      );
+      var message = totalAdded > 0
+          ? l10n.addedNFilesToDownloadQueue(totalAdded)
+          : l10n.noFilesNeedSupplement;
+      // 对比失败的作品在这里统一补报（Snackbar 同时只显示一条）
+      if (failedWorkIds.isNotEmpty) {
+        message += '\n${l10n.supplementCompareFailed(failedWorkIds.length)}';
+      }
+      if (failedWorkIds.isNotEmpty) {
+        SnackBarUtil.showWarning(context, message);
+      } else {
+        SnackBarUtil.showSuccess(context, message);
+      }
     } catch (e) {
       if (!mounted) return;
       if (dialogOpen) {

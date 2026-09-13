@@ -3744,6 +3744,18 @@ abstract class S {
   /// **'Comparing online and local files...'**
   String get supplementComparing;
 
+  /// No description provided for @supplementComparingProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'Comparing {count}/{total} works...'**
+  String supplementComparingProgress(Object count, Object total);
+
+  /// No description provided for @supplementCompareFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} work(s) failed to compare and were skipped'**
+  String supplementCompareFailed(Object count);
+
   /// No description provided for @supplementCheckFailed.
   ///
   /// In en, this message translates to:

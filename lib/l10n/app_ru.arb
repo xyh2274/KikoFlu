@@ -694,6 +694,8 @@
   "supplementMissingCount": "Отсутствует: {count}",
   "supplementDownloadNeedServer": "Сначала настройте адрес сервера для дополнительной загрузки",
   "supplementComparing": "Сравнение онлайн и локальных файлов...",
+  "supplementComparingProgress": "Сравнение {count}/{total}...",
+  "supplementCompareFailed": "Не удалось сравнить {count} работ(ы), пропущено",
   "supplementCheckFailed": "Не удалось сравнить онлайн-файлы: {error}",
   "noFilesNeedSupplement": "Локальные файлы в порядке, дополнительная загрузка не требуется",
   "supplementConfirmContent": "Обнаружено {count} отсутствующих файлов (всего {size}). Добавить в очередь загрузки?",

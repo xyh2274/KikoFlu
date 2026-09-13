@@ -2012,6 +2012,16 @@ class SEn extends S {
   String get supplementComparing => 'Comparing online and local files...';
 
   @override
+  String supplementComparingProgress(Object count, Object total) {
+    return 'Comparing $count/$total works...';
+  }
+
+  @override
+  String supplementCompareFailed(Object count) {
+    return '$count work(s) failed to compare and were skipped';
+  }
+
+  @override
   String supplementCheckFailed(Object error) {
     return 'Failed to compare online files: $error';
   }

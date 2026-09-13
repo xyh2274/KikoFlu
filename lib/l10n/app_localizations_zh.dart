@@ -1955,6 +1955,16 @@ class SZh extends S {
   String get supplementComparing => '正在对比在线与本地文件...';
 
   @override
+  String supplementComparingProgress(Object count, Object total) {
+    return '正在对比 $count/$total 个音声...';
+  }
+
+  @override
+  String supplementCompareFailed(Object count) {
+    return '$count 个音声对比失败，已跳过';
+  }
+
+  @override
   String supplementCheckFailed(Object error) {
     return '对比在线文件失败: $error';
   }
@@ -5664,6 +5674,16 @@ class SZhHant extends SZh {
 
   @override
   String get supplementComparing => '正在比對線上與本機檔案...';
+
+  @override
+  String supplementComparingProgress(Object count, Object total) {
+    return '正在對比 $count/$total 個音聲...';
+  }
+
+  @override
+  String supplementCompareFailed(Object count) {
+    return '$count 個音聲對比失敗，已跳過';
+  }
 
   @override
   String supplementCheckFailed(Object error) {
