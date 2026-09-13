@@ -10,6 +10,27 @@ import '../utils/snackbar_util.dart';
 import '../../l10n/app_localizations.dart';
 import 'responsive_dialog.dart';
 
+/// 为覆盖播放列表里全部 [totalCount] 个作品，第 1 页之后仍需抓取的页码列表。
+///
+/// [effectivePageSize] 传**服务端第 1 页实际返回的条数**（可能小于请求值），
+/// [maxPages] 为页数安全上限（防御作品数异常巨大的播放列表）。
+/// 返回空列表表示第 1 页已经覆盖全部作品。
+///
+/// 抽成纯函数是为了让"页数覆盖"这个曾经的 bug 点可被回归测试锁住。
+@visibleForTesting
+List<int> playlistPagesToScan({
+  required int totalCount,
+  required int effectivePageSize,
+  required int maxPages,
+}) {
+  if (effectivePageSize <= 0) return const [];
+  if (totalCount <= effectivePageSize) return const [];
+
+  var totalPages = (totalCount + effectivePageSize - 1) ~/ effectivePageSize;
+  if (totalPages > maxPages) totalPages = maxPages;
+  return [for (var page = 2; page <= totalPages; page++) page];
+}
+
 /// 添加作品到播放列表的对话框
 class AddToPlaylistDialog extends ConsumerStatefulWidget {
   final int workId;
@@ -43,10 +64,21 @@ class AddToPlaylistDialog extends ConsumerStatefulWidget {
 class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
   static final _log = LogService.instance;
 
+  /// API 单页最大数量
+  static const int _pageSize = 96;
+
+  /// 检查成员关系时的安全页数上限（20 * 96 = 1920 个作品）
+  static const int _maxPages = 20;
+
+  /// 单个播放列表同时抓取的页数
+  static const int _pageConcurrency = 6;
+
   bool _isAdding = false;
   bool _isLoadingPlaylists = true;
-  bool _isCheckingMembership = false;
   String? _loadError;
+
+  /// 仍在检查成员关系的播放列表 id（逐条消失，不再整表一起转圈）
+  final Set<String> _checking = {};
 
   /// 本地加载的全部播放列表（不依赖分页 provider）
   List<Playlist> _allPlaylists = [];
@@ -71,13 +103,12 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
       final apiService = ref.read(kikoeruApiServiceProvider);
       final allPlaylists = <Playlist>[];
       int page = 1;
-      const pageSize = 96; // API 最大数量
-      const maxPages = 5;
+      const maxPages = 5; // 播放列表本身的页数上限（每页 _pageSize 个）
 
       while (page <= maxPages) {
         final result = await apiService.getUserPlaylists(
           page: page,
-          pageSize: pageSize,
+          pageSize: _pageSize,
           filterBy: 'all',
         );
 
@@ -87,7 +118,14 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
             .toList();
         allPlaylists.addAll(playlists);
 
-        if (playlists.length < pageSize) break;
+        if (playlists.isEmpty) break;
+        // 优先用服务端给的总数判断是否取完（服务端可能截断 pageSize）
+        final total = _totalCountOf(result);
+        if (total != null) {
+          if (allPlaylists.length >= total) break;
+        } else if (playlists.length < _pageSize) {
+          break;
+        }
         page++;
       }
 
@@ -108,67 +146,109 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
     }
   }
 
-  /// 检查作品在哪些播放列表中（遍历所有页以保证准确性）
+  /// 从分页信息里取作品总数（服务端字段缺失时返回 null）
+  int? _totalCountOf(Map<String, dynamic> response) {
+    final pagination = response['pagination'];
+    if (pagination is Map && pagination['totalCount'] is int) {
+      return pagination['totalCount'] as int;
+    }
+    return null;
+  }
+
+  /// 检查作品在哪些播放列表中
+  ///
+  /// 逐条完成、逐条回填：每个播放列表查完就更新自己的那一行，
+  /// 不再让每一行都挂着转圈直到整套检查结束。
   Future<void> _checkWorkMembership() async {
     if (_allPlaylists.isEmpty) return;
 
-    setState(() => _isCheckingMembership = true);
+    setState(() {
+      _inPlaylists.clear();
+      _checking
+        ..clear()
+        ..addAll(_allPlaylists.map((playlist) => playlist.id));
+    });
 
-    try {
-      final apiService = ref.read(kikoeruApiServiceProvider);
-
-      // 并行检查所有播放列表
-      final results = await Future.wait(
-        _allPlaylists.map((playlist) async {
-          try {
-            return MapEntry(
-              playlist.id,
-              await _isWorkInPlaylist(apiService, playlist),
-            );
-          } catch (e) {
-            _log.debug('检查播放列表成员失败: ${playlist.displayName}, $e',
-                tag: 'Playlist');
-            return MapEntry(playlist.id, false);
-          }
-        }),
-      );
-
-      if (mounted) {
-        setState(() {
-          _inPlaylists.clear();
-          for (final entry in results) {
-            if (entry.value) {
-              _inPlaylists.add(entry.key);
-            }
-          }
-          _isCheckingMembership = false;
-        });
+    await Future.wait(_allPlaylists.map((playlist) async {
+      bool found = false;
+      try {
+        found = await _isWorkInPlaylist(playlist);
+      } catch (e) {
+        _log.debug('检查播放列表成员失败: ${playlist.displayName}, $e',
+            tag: 'Playlist');
       }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isCheckingMembership = false);
-      }
-    }
+      if (!mounted) return;
+      setState(() {
+        _checking.remove(playlist.id);
+        if (found) {
+          _inPlaylists.add(playlist.id);
+        }
+      });
+    }));
   }
 
-  /// 遍历播放列表所有页检查作品是否存在
-  Future<bool> _isWorkInPlaylist(dynamic apiService, Playlist playlist) async {
-    int page = 1;
-    const pageSize = 96; // API 最大数量
-    const maxPages = 5;
+  /// 检查作品是否已在指定播放列表中
+  ///
+  /// 旧实现逐页 `await`，几百个作品的播放列表要串行跑完 5 个来回，
+  /// 而且被 maxPages 截断后还会漏检尾部的作品（误显示为"未收藏"）。
+  /// 现在：先取第 1 页拿分页信息 `totalCount`，再把剩余页按
+  /// [_pageConcurrency] 并发取回，既把 N 个串行来回压成一批，
+  /// 也能覆盖播放列表的全部作品。
+  Future<bool> _isWorkInPlaylist(Playlist playlist) async {
+    final apiService = ref.read(kikoeruApiServiceProvider);
 
-    while (page <= maxPages) {
-      final response = await apiService.getPlaylistWorks(
-        playlistId: playlist.id,
-        page: page,
-        pageSize: pageSize,
-      );
+    final firstResponse = await apiService.getPlaylistWorks(
+      playlistId: playlist.id,
+      page: 1,
+      pageSize: _pageSize,
+    );
+    final firstWorks = (firstResponse['works'] as List?) ?? const [];
+    if (firstWorks.any((work) => work['id'] == widget.workId)) return true;
+    if (firstWorks.isEmpty) return false;
 
-      final works = response['works'] as List;
-      if (works.any((work) => work['id'] == widget.workId)) return true;
+    // 以服务端实际生效的页长为准（可能小于请求值）
+    final effectivePageSize = firstWorks.length;
+    final totalCount = _totalCountOf(firstResponse) ?? playlist.worksCount;
+    if (totalCount <= effectivePageSize) return false; // 一页就取完了
 
-      if (works.length < pageSize) return false;
-      page++;
+    final pagesToScan = playlistPagesToScan(
+      totalCount: totalCount,
+      effectivePageSize: effectivePageSize,
+      maxPages: _maxPages,
+    );
+    if (pagesToScan.isNotEmpty && pagesToScan.last >= _maxPages) {
+      _log.debug(
+          '播放列表 ${playlist.displayName} 作品过多，仅检查前 ${_maxPages * effectivePageSize} 个',
+          tag: 'Playlist');
+    }
+
+    for (var offset = 0;
+        offset < pagesToScan.length;
+        offset += _pageConcurrency) {
+      final end = offset + _pageConcurrency <= pagesToScan.length
+          ? offset + _pageConcurrency
+          : pagesToScan.length;
+      final pages = pagesToScan.sublist(offset, end);
+
+      final responses = await Future.wait(pages.map((page) async {
+        try {
+          return await apiService.getPlaylistWorks(
+            playlistId: playlist.id,
+            page: page,
+            pageSize: effectivePageSize,
+          );
+        } catch (e) {
+          _log.debug(
+              '检查播放列表成员失败: ${playlist.displayName} 第 $page 页, $e',
+              tag: 'Playlist');
+          return const <String, dynamic>{};
+        }
+      }));
+
+      for (final response in responses) {
+        final works = (response['works'] as List?) ?? const [];
+        if (works.any((work) => work['id'] == widget.workId)) return true;
+      }
     }
     return false;
   }
@@ -408,7 +488,7 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
                       ],
                     ],
                   ),
-                  trailing: _isCheckingMembership
+                  trailing: _checking.contains(playlist.id)
                       ? const SizedBox(
                           width: 20,
                           height: 20,
