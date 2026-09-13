@@ -87,7 +87,10 @@ class _GlobalAudioPlayerWrapperState
       body: Column(
         children: [
           Expanded(child: widget.child),
-          if (widget.showMiniPlayer) miniPlayer,
+          // MiniPlayer 不在 Scaffold 的 bottomNavigationBar 插槽里，不会自动
+          // 避让系统导航栏（三键导航/手势条），必须用 SafeArea 抬起；
+          // Liquid Glass 分支由 dockBottomInset 自行处理，无需此处干预。
+          if (widget.showMiniPlayer) SafeArea(top: false, child: miniPlayer),
         ],
       ),
     );
