@@ -62,7 +62,6 @@ class _PlayerControlsWidgetState extends ConsumerState<PlayerControlsWidget> {
 
     showDialog(
       context: context,
-      barrierDismissible: !Platform.isIOS,
       builder: (context) => ResponsiveAlertDialog(
         title: Text(S.of(context).playbackSpeed),
         content: StatefulBuilder(
@@ -107,19 +106,16 @@ class _PlayerControlsWidgetState extends ConsumerState<PlayerControlsWidget> {
         : ref.read(playerButtonsConfigMobileProvider);
     final moreButtons = config.getMoreButtons(isDesktop);
 
-    showModalBottomSheet(
+    showResponsiveBottomSheet(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setState) => SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ...moreButtons.map((buttonType) {
-                return _buildMenuItemForButton(
-                    context, ref, buttonType, setState);
-              }),
-            ],
-          ),
+        builder: (context, setState) => BottomSheetMenu(
+          children: [
+            ...moreButtons.map((buttonType) {
+              return _buildMenuItemForButton(
+                  context, ref, buttonType, setState);
+            }),
+          ],
         ),
       ),
     );

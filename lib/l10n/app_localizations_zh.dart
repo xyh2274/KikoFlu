@@ -319,6 +319,11 @@ class SZh extends S {
   String get includeMode => '包含';
 
   @override
+  String includeModeTapAgainHint(String searchType) {
+    return '包含：$searchType（再次点击进入排除模式）';
+  }
+
+  @override
   String get noResults => '没有结果';
 
   @override
@@ -381,6 +386,15 @@ class SZh extends S {
   String get floatingLyricTouchDisabled => '已锁定 - 长按悬浮字幕解锁';
 
   @override
+  String get floatingLyricClickThrough => '悬浮字幕点击穿透';
+
+  @override
+  String get floatingLyricClickThroughEnabled => '已启用 - 悬浮字幕将忽略鼠标操作';
+
+  @override
+  String get floatingLyricClickThroughDisabled => '未启用 - 可拖动悬浮字幕';
+
+  @override
   String get floatingFPS => '显示帧率';
 
   @override
@@ -417,6 +431,16 @@ class SZh extends S {
   String get maxConcurrentDownloadsSubtitle => '限制同时进行的下载任务数量';
 
   @override
+  String maxConcurrentDownloadsValue(int count) {
+    return '同时下载 $count 个';
+  }
+
+  @override
+  String maxConcurrentDownloadsCount(int count) {
+    return '$count 个同时下载';
+  }
+
+  @override
   String get cacheManagement => '缓存管理';
 
   @override
@@ -437,10 +461,22 @@ class SZh extends S {
   String get uiSettingsSubtitle => '播放器、详情页、卡片等';
 
   @override
+  String get liquidGlassNavigation => '液态玻璃导航';
+
+  @override
+  String get liquidGlassNavigationDesc => '玻璃导航栏与迷你播放器；Apple系26+平台默认开启';
+
+  @override
+  String get fallbackGlassTransparency => '液态玻璃透明度';
+
+  @override
+  String get fallbackGlassTransparencyDesc => '调整应用绘制玻璃的透明度';
+
+  @override
   String get preferenceSettings => '偏好设置';
 
   @override
-  String get preferenceSettingsSubtitle => '翻译源、屏蔽、音频偏好等';
+  String get preferenceSettingsSubtitle => '翻译、播放与网络';
 
   @override
   String get aboutTitle => '关于';
@@ -589,6 +625,12 @@ class SZh extends S {
 
   @override
   String get deselectAll => '取消全选';
+
+  @override
+  String get collapseAll => '全部收起';
+
+  @override
+  String get expandAll => '全部展开';
 
   @override
   String get select => '选择';
@@ -842,6 +884,12 @@ class SZh extends S {
   String get translationTargetLanguage => '目标语言';
 
   @override
+  String get autoSaveTranslatedLyrics => '自动保存翻译歌词';
+
+  @override
+  String get autoSaveTranslatedLyricsDesc => '翻译后保存到字幕库；关闭时仅临时显示';
+
+  @override
   String get selectTranslationTargetLanguage => '选择目标语言：';
 
   @override
@@ -901,13 +949,46 @@ class SZh extends S {
   String get llmSettings => 'LLM设置';
 
   @override
-  String get llmSettingsSubtitle => '配置 API 地址、Key 和模型';
+  String get llmSettingsSubtitle => 'API 地址、协议、密钥和模型';
 
   @override
   String get audioFormatPreference => '音频格式偏好';
 
   @override
-  String get audioFormatSubtitle => '设置音频格式的优先级顺序';
+  String get audioFormatSubtitle => '调整音频格式优先级';
+
+  @override
+  String get audioTapPlaylistMode => '播放列表添加模式';
+
+  @override
+  String get selectAudioTapPlaylistMode => '选择点击音频时如何更新播放列表：';
+
+  @override
+  String get audioTapPlaylistModeReplace => '替换模式';
+
+  @override
+  String get audioTapPlaylistModeReplaceDescription =>
+      '用点击音频所在目录下的所有可播放音频替换当前播放列表。';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectory => '追加模式';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectoryDescription =>
+      '将点击音频所在目录下的所有可播放音频追加到播放列表尾部；不会重复添加已有音轨。';
+
+  @override
+  String get audioTapPlaylistModeAppendSingle => '单音频追加模式';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleDescription =>
+      '只将点击的这个音频追加到播放列表尾部；不会重复添加已有音轨。';
+
+  @override
+  String get audioTapPlaylistModeAppendChip => '追加模式';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleChip => '单音频追加模式';
 
   @override
   String get preloadNextTitle => '预加载下一首';
@@ -947,31 +1028,43 @@ class SZh extends S {
   String get keepScreenAwake => '屏幕常亮';
 
   @override
-  String get keepScreenAwakeDesc => '开启后，有音频轨道时保持屏幕常亮，便于查看字幕。';
+  String get keepScreenAwakeDesc => '播放时保持屏幕常亮';
 
   @override
   String get audioHaptics => '音频触感反馈(Beta)';
 
   @override
-  String get audioHapticsDesc => '仅支持已下载音频，且只在应用前台生效。使设备随音频特征震动，可能增加耗电';
+  String get audioHapticsDesc => '随已下载音频振动，仅前台生效';
 
   @override
   String get audioHapticsIntensity => '强度';
 
   @override
+  String get audioGain => '全局音频增益';
+
+  @override
+  String get audioGainDesc => '0 dB 为原声；正增益过高可能失真或损伤听力';
+
+  @override
+  String get audioGainAttenuationDesc => '降低所有音频；0 dB 保持原声';
+
+  @override
+  String get audioGainPassthroughDesc => '音频直通开启时不可用';
+
+  @override
   String get blockingSettings => '屏蔽设置';
 
   @override
-  String get blockingSettingsSubtitle => '管理屏蔽的标签、声优和社团';
+  String get blockingSettingsSubtitle => '屏蔽标签、声优和社团';
 
   @override
   String get audioPassthrough => '音频直通(Beta)';
 
   @override
-  String get audioPassthroughDescWindows => '开启WASAPI独占模式，实现无损输出（需重启）';
+  String get audioPassthroughDescWindows => '使用 WASAPI 独占输出（需重启）';
 
   @override
-  String get audioPassthroughDescMac => '开启CoreAudio独占模式，实现无损输出';
+  String get audioPassthroughDescMac => '使用 CoreAudio 独占输出';
 
   @override
   String get audioPassthroughDisableDesc => '关闭音频直通模式';
@@ -1641,26 +1734,26 @@ class SZh extends S {
   String get surfaceColor => '表面色';
 
   @override
-  String get playerButtonSettingsSubtitle => '自定义播放器控制按钮顺序';
+  String get playerButtonSettingsSubtitle => '调整播放器按钮顺序';
 
   @override
-  String get playerLyricStyleSubtitle => '自定义迷你播放器和全屏播放器的字幕样式';
+  String get playerLyricStyleSubtitle => '调整迷你与全屏歌词样式';
 
   @override
-  String get workDetailDisplaySubtitle => '控制作品详情页显示的信息项';
+  String get workDetailDisplaySubtitle => '选择详情页显示内容';
 
   @override
-  String get workCardDisplaySubtitle => '控制作品卡片显示的信息项';
+  String get workCardDisplaySubtitle => '选择作品卡片显示内容';
 
   @override
-  String get myTabsDisplaySubtitle => '控制\"我的\"界面中标签页的显示';
+  String get myTabsDisplaySubtitle => '选择“我的”页面标签';
 
   @override
   String get pageSizeSettings => '每页显示数量';
 
   @override
   String pageSizeCurrent(int size) {
-    return '当前设置: $size 条/页';
+    return '每页 $size 条';
   }
 
   @override
@@ -1680,20 +1773,19 @@ class SZh extends S {
   String get autoSwitchedToLlm => '已自动切换至: 大模型翻译';
 
   @override
-  String get translationDescGoogle => '需要网络环境支持';
+  String get translationDescGoogle => '需连接 Google 服务';
 
   @override
-  String get translationDescYoudao => '支持默认网络环境';
+  String get translationDescYoudao => '使用当前网络';
 
   @override
-  String get translationDescMicrosoft => '支持默认网络环境';
+  String get translationDescMicrosoft => '使用当前网络';
 
   @override
-  String get translationDescLlm => 'OpenAI 兼容接口, 需要手动配置API Key';
+  String get translationDescLlm => '需配置 OpenAI 兼容 API';
 
   @override
-  String get audioPassthroughDescAndroid =>
-      '允许输出原始比特流 (AC3/DTS) 到外部解码器。可能会独占音频设备。';
+  String get audioPassthroughDescAndroid => '将 AC3/DTS 原始音频交给外部解码器';
 
   @override
   String get permissionExplanation => '权限说明';
@@ -1873,6 +1965,16 @@ class SZh extends S {
   String get supplementComparing => '正在对比在线与本地文件...';
 
   @override
+  String supplementComparingProgress(Object count, Object total) {
+    return '正在对比 $count/$total 个音声...';
+  }
+
+  @override
+  String supplementCompareFailed(Object count) {
+    return '$count 个音声对比失败，已跳过';
+  }
+
+  @override
   String supplementCheckFailed(Object error) {
     return '对比在线文件失败: $error';
   }
@@ -1889,6 +1991,9 @@ class SZh extends S {
   String supplementDownloadFailed(Object error) {
     return '补充下载失败: $error';
   }
+
+  @override
+  String get supplementTaskBadge => '补充';
 
   @override
   String get playlistLink => '播放列表链接';
@@ -2120,7 +2225,7 @@ class SZh extends S {
 
   @override
   String get lyricTranslationConfirmMessage =>
-      '将使用当前翻译设置翻译正在播放的歌词。完成后会立即显示译文，并以同名 .lrc 覆盖保存到字幕库的“已保存”目录，之后可自动匹配读取。翻译过程中切歌会放弃本次结果。';
+      '翻译当前播放的歌词，完成后立即显示。开启自动保存时会以同名 .lrc 覆盖保存到字幕库；翻译中切歌会放弃本次结果。';
 
   @override
   String get unlock => '解锁';
@@ -2135,22 +2240,7 @@ class SZh extends S {
   String get floatingSubtitle => '悬浮字幕';
 
   @override
-  String get appendMode => '追加模式';
-
-  @override
-  String get appendModeStatusOn => '追加模式：开启';
-
-  @override
-  String get appendModeStatusOff => '追加模式：关闭';
-
-  @override
   String get playlistEmpty => '播放列表为空';
-
-  @override
-  String get appendModeEnabled => '追加模式已开启';
-
-  @override
-  String get appendModeHint => '之后点击音频会追加到当前播放列表尾部，而不是替换整个列表。\n不会重复添加同一音轨。';
 
   @override
   String get gotIt => '知道了';
@@ -2770,6 +2860,9 @@ class SZh extends S {
   String get restoreDefaultSettings => '恢复默认设置';
 
   @override
+  String get confirmRestoreDefaultSettings => '确定要恢复默认设置吗？';
+
+  @override
   String get guideInPrefix => '在';
 
   @override
@@ -2983,6 +3076,9 @@ class SZh extends S {
 
   @override
   String get savedToSubtitleLibrary => '已保存到字幕库';
+
+  @override
+  String get translatedLyricsNotSaved => '翻译已完成，仅在当前播放中显示';
 
   @override
   String get saveToLocal => '保存到本地';
@@ -3321,7 +3417,22 @@ class SZh extends S {
   String get apiEndpointUrl => 'API 接口地址';
 
   @override
-  String get openaiCompatibleEndpoint => 'OpenAI 兼容接口地址';
+  String get apiBaseUrl => 'API 基础地址';
+
+  @override
+  String get apiProtocol => '接口协议';
+
+  @override
+  String get chatCompletionsProtocol => 'Chat Completions (/chat/completions)';
+
+  @override
+  String get responsesProtocol => 'Responses (/responses)';
+
+  @override
+  String get anthropicProtocol => 'Anthropic Messages (/messages)';
+
+  @override
+  String get openaiCompatibleEndpoint => '系统会自动添加所选协议后缀';
 
   @override
   String get pleaseEnterApiUrl => '请输入 API 接口地址';
@@ -3441,6 +3552,9 @@ class SZh extends S {
   String get showSubtitleTagOnCover => '在封面图上显示字幕标签';
 
   @override
+  String get showAgeRatingOnDetail => '在作品详情页显示年龄分级';
+
+  @override
   String get recommendationsLabel => '相关推荐';
 
   @override
@@ -3481,6 +3595,9 @@ class SZh extends S {
 
   @override
   String get showSubtitleTagOnCard => '显示作品卡片上的字幕标签';
+
+  @override
+  String get showAgeRatingOnCard => '显示作品卡片上的年龄分级';
 
   @override
   String get showOnlineMarks => '显示在线标记的作品';
@@ -3584,6 +3701,65 @@ class SZh extends S {
 
   @override
   String get logEmpty => '暂无日志';
+
+  @override
+  String get proxySettingsOptional => '代理';
+
+  @override
+  String get loginAdvancedSettings => '高级配置';
+
+  @override
+  String proxyEnabled(String address) {
+    return '已启用：$address';
+  }
+
+  @override
+  String get proxyAddressNotSet => '未设置（默认直连）';
+
+  @override
+  String get proxyHttpDescription => '通过 HTTP 代理连接服务器';
+
+  @override
+  String get useProxy => '使用代理';
+
+  @override
+  String get proxyAddress => '代理地址';
+
+  @override
+  String get proxyAddressFormat => '格式：主机:端口，例如 127.0.0.1:7890';
+
+  @override
+  String get applyProxyAddress => '应用代理地址';
+
+  @override
+  String get invalidProxyAddress => '请输入有效的 HTTP 代理地址和端口';
+
+  @override
+  String get proxyModeDirect => '直连';
+
+  @override
+  String get proxyModeSystem => '系统代理';
+
+  @override
+  String get proxyModeManual => '手动代理';
+
+  @override
+  String get proxyModeDirectDescription => '不使用代理直接连接';
+
+  @override
+  String get proxyModeSystemDescription => '使用操作系统的代理设置';
+
+  @override
+  String get proxyModeManualDescription => '使用下方配置的 HTTP 代理';
+
+  @override
+  String get playlistDisplayFormat => '播放列表布局';
+
+  @override
+  String get playlistDisplayFormatMasonry => '瀑布流';
+
+  @override
+  String get playlistDisplayFormatList => '列表';
 }
 
 /// The translations for Chinese, using the Han script (`zh_Hant`).
@@ -3901,6 +4077,11 @@ class SZhHant extends SZh {
   String get includeMode => '包含';
 
   @override
+  String includeModeTapAgainHint(String searchType) {
+    return '包含：$searchType（再次點擊進入排除模式）';
+  }
+
+  @override
   String get noResults => '沒有結果';
 
   @override
@@ -3963,6 +4144,15 @@ class SZhHant extends SZh {
   String get floatingLyricTouchDisabled => '已鎖定 - 長按懸浮字幕解鎖';
 
   @override
+  String get floatingLyricClickThrough => '懸浮字幕點擊穿透';
+
+  @override
+  String get floatingLyricClickThroughEnabled => '已啟用 - 懸浮字幕將忽略滑鼠操作';
+
+  @override
+  String get floatingLyricClickThroughDisabled => '未啟用 - 可拖動懸浮字幕';
+
+  @override
   String get floatingFPS => '顯示幀率';
 
   @override
@@ -3999,6 +4189,16 @@ class SZhHant extends SZh {
   String get maxConcurrentDownloadsSubtitle => '限制同時進行的下載任務數量';
 
   @override
+  String maxConcurrentDownloadsValue(int count) {
+    return '同時下載 $count 個';
+  }
+
+  @override
+  String maxConcurrentDownloadsCount(int count) {
+    return '$count 個同時下載';
+  }
+
+  @override
   String get cacheManagement => '快取管理';
 
   @override
@@ -4019,10 +4219,22 @@ class SZhHant extends SZh {
   String get uiSettingsSubtitle => '播放器、詳情頁、卡片等';
 
   @override
+  String get liquidGlassNavigation => '液態玻璃導覽';
+
+  @override
+  String get liquidGlassNavigationDesc => '玻璃導覽列與迷你播放器；Apple 系 26+ 平台預設開啟';
+
+  @override
+  String get fallbackGlassTransparency => '液態玻璃透明度';
+
+  @override
+  String get fallbackGlassTransparencyDesc => '調整應用程式繪製玻璃的透明度';
+
+  @override
   String get preferenceSettings => '偏好設定';
 
   @override
-  String get preferenceSettingsSubtitle => '翻譯源、封鎖、音訊偏好等';
+  String get preferenceSettingsSubtitle => '翻譯、播放與網路';
 
   @override
   String get aboutTitle => '關於';
@@ -4171,6 +4383,12 @@ class SZhHant extends SZh {
 
   @override
   String get deselectAll => '取消全選';
+
+  @override
+  String get collapseAll => '全部收起';
+
+  @override
+  String get expandAll => '全部展開';
 
   @override
   String get select => '選擇';
@@ -4424,6 +4642,12 @@ class SZhHant extends SZh {
   String get translationTargetLanguage => '目標語言';
 
   @override
+  String get autoSaveTranslatedLyrics => '自動儲存翻譯歌詞';
+
+  @override
+  String get autoSaveTranslatedLyricsDesc => '翻譯後儲存到字幕庫；關閉時僅暫時顯示';
+
+  @override
   String get selectTranslationTargetLanguage => '選擇目標語言：';
 
   @override
@@ -4483,13 +4707,46 @@ class SZhHant extends SZh {
   String get llmSettings => 'LLM設定';
 
   @override
-  String get llmSettingsSubtitle => '設定 API 位址、Key 和模型';
+  String get llmSettingsSubtitle => 'API 位址、協議、金鑰和模型';
 
   @override
   String get audioFormatPreference => '音訊格式偏好';
 
   @override
-  String get audioFormatSubtitle => '設定音訊格式的優先順序';
+  String get audioFormatSubtitle => '調整音訊格式優先順序';
+
+  @override
+  String get audioTapPlaylistMode => '播放清單新增模式';
+
+  @override
+  String get selectAudioTapPlaylistMode => '選擇點擊音訊時如何更新播放清單：';
+
+  @override
+  String get audioTapPlaylistModeReplace => '取代模式';
+
+  @override
+  String get audioTapPlaylistModeReplaceDescription =>
+      '以所點音訊所在目錄中的所有可播放音訊取代目前播放清單。';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectory => '追加模式';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectoryDescription =>
+      '將所點音訊所在目錄中的所有可播放音訊追加到播放清單尾端；不會重複新增已有音軌。';
+
+  @override
+  String get audioTapPlaylistModeAppendSingle => '單音訊追加模式';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleDescription =>
+      '只將所點擊的音訊追加到播放清單尾端；不會重複新增已有音軌。';
+
+  @override
+  String get audioTapPlaylistModeAppendChip => '追加模式';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleChip => '單音訊追加模式';
 
   @override
   String get preloadNextTitle => '預載下一首';
@@ -4529,31 +4786,43 @@ class SZhHant extends SZh {
   String get keepScreenAwake => '螢幕常亮';
 
   @override
-  String get keepScreenAwakeDesc => '開啟後，有音訊軌道時保持螢幕常亮，方便查看字幕。';
+  String get keepScreenAwakeDesc => '播放時保持螢幕常亮';
 
   @override
   String get audioHaptics => '音訊觸感回饋(Beta)';
 
   @override
-  String get audioHapticsDesc => '僅支援已下載音訊，且只在應用程式前台生效。使裝置隨音訊特徵震動，可能增加耗電';
+  String get audioHapticsDesc => '隨已下載音訊震動，僅前台生效';
 
   @override
   String get audioHapticsIntensity => '強度';
 
   @override
+  String get audioGain => '全域音訊增益';
+
+  @override
+  String get audioGainDesc => '0 dB 為原聲；正增益過高可能失真或損傷聽力';
+
+  @override
+  String get audioGainAttenuationDesc => '降低所有音訊；0 dB 保持原聲';
+
+  @override
+  String get audioGainPassthroughDesc => '音訊直通開啟時無法使用';
+
+  @override
   String get blockingSettings => '封鎖設定';
 
   @override
-  String get blockingSettingsSubtitle => '管理封鎖的標籤、聲優和社團';
+  String get blockingSettingsSubtitle => '封鎖標籤、聲優和社團';
 
   @override
   String get audioPassthrough => '音訊直通(Beta)';
 
   @override
-  String get audioPassthroughDescWindows => '開啟WASAPI獨佔模式，實現無損輸出（需重新啟動）';
+  String get audioPassthroughDescWindows => '使用 WASAPI 獨佔輸出（需重新啟動）';
 
   @override
-  String get audioPassthroughDescMac => '開啟CoreAudio獨佔模式，實現無損輸出';
+  String get audioPassthroughDescMac => '使用 CoreAudio 獨佔輸出';
 
   @override
   String get audioPassthroughDisableDesc => '關閉音訊直通模式';
@@ -5196,26 +5465,26 @@ class SZhHant extends SZh {
   String get surfaceColor => '表面色';
 
   @override
-  String get playerButtonSettingsSubtitle => '自訂播放器控制按鈕順序';
+  String get playerButtonSettingsSubtitle => '調整播放器按鈕順序';
 
   @override
-  String get playerLyricStyleSubtitle => '自訂迷你播放器和全螢幕播放器的字幕樣式';
+  String get playerLyricStyleSubtitle => '調整迷你與全螢幕歌詞樣式';
 
   @override
-  String get workDetailDisplaySubtitle => '控制作品詳情頁顯示的資訊項';
+  String get workDetailDisplaySubtitle => '選擇詳情頁顯示內容';
 
   @override
-  String get workCardDisplaySubtitle => '控制作品卡片顯示的資訊項';
+  String get workCardDisplaySubtitle => '選擇作品卡片顯示內容';
 
   @override
-  String get myTabsDisplaySubtitle => '控制「我的」介面中標籤頁的顯示';
+  String get myTabsDisplaySubtitle => '選擇「我的」頁面標籤';
 
   @override
   String get pageSizeSettings => '每頁顯示數量';
 
   @override
   String pageSizeCurrent(int size) {
-    return '目前設定: $size 條/頁';
+    return '每頁 $size 條';
   }
 
   @override
@@ -5235,20 +5504,19 @@ class SZhHant extends SZh {
   String get autoSwitchedToLlm => '已自動切換至: 大型語言模型翻譯';
 
   @override
-  String get translationDescGoogle => '需要網路環境支援';
+  String get translationDescGoogle => '需連接 Google 服務';
 
   @override
-  String get translationDescYoudao => '支援預設網路環境';
+  String get translationDescYoudao => '使用目前網路';
 
   @override
-  String get translationDescMicrosoft => '支援預設網路環境';
+  String get translationDescMicrosoft => '使用目前網路';
 
   @override
-  String get translationDescLlm => 'OpenAI 相容介面，需要手動設定API Key';
+  String get translationDescLlm => '需設定 OpenAI 相容 API';
 
   @override
-  String get audioPassthroughDescAndroid =>
-      '允許輸出原始位元流 (AC3/DTS) 到外部解碼器。可能會獨佔音訊裝置。';
+  String get audioPassthroughDescAndroid => '將 AC3/DTS 原始音訊交給外部解碼器';
 
   @override
   String get permissionExplanation => '權限說明';
@@ -5428,6 +5696,16 @@ class SZhHant extends SZh {
   String get supplementComparing => '正在比對線上與本機檔案...';
 
   @override
+  String supplementComparingProgress(Object count, Object total) {
+    return '正在對比 $count/$total 個音聲...';
+  }
+
+  @override
+  String supplementCompareFailed(Object count) {
+    return '$count 個音聲對比失敗，已跳過';
+  }
+
+  @override
   String supplementCheckFailed(Object error) {
     return '比對線上檔案失敗: $error';
   }
@@ -5444,6 +5722,9 @@ class SZhHant extends SZh {
   String supplementDownloadFailed(Object error) {
     return '補充下載失敗: $error';
   }
+
+  @override
+  String get supplementTaskBadge => '補充';
 
   @override
   String get playlistLink => '播放清單連結';
@@ -5675,7 +5956,7 @@ class SZhHant extends SZh {
 
   @override
   String get lyricTranslationConfirmMessage =>
-      '將使用目前翻譯設定翻譯正在播放的歌詞。完成後會立即顯示譯文，並以同名 .lrc 覆蓋儲存到字幕庫的「已儲存」目錄，之後可自動匹配讀取。翻譯過程中切歌會放棄本次結果。';
+      '翻譯目前播放的歌詞，完成後立即顯示。開啟自動儲存時會以同名 .lrc 覆蓋儲存到字幕庫；翻譯中切歌會放棄本次結果。';
 
   @override
   String get unlock => '解鎖';
@@ -5690,22 +5971,7 @@ class SZhHant extends SZh {
   String get floatingSubtitle => '懸浮字幕';
 
   @override
-  String get appendMode => '追加模式';
-
-  @override
-  String get appendModeStatusOn => '追加模式：開啟';
-
-  @override
-  String get appendModeStatusOff => '追加模式：關閉';
-
-  @override
   String get playlistEmpty => '播放列表為空';
-
-  @override
-  String get appendModeEnabled => '追加模式已開啟';
-
-  @override
-  String get appendModeHint => '之後點擊音訊會追加到目前播放列表尾部，而不是替換整個列表。\n不會重複新增同一音軌。';
 
   @override
   String get gotIt => '知道了';
@@ -6325,6 +6591,9 @@ class SZhHant extends SZh {
   String get restoreDefaultSettings => '恢復預設設定';
 
   @override
+  String get confirmRestoreDefaultSettings => '確定要恢復預設設定嗎？';
+
+  @override
   String get guideInPrefix => '在';
 
   @override
@@ -6538,6 +6807,9 @@ class SZhHant extends SZh {
 
   @override
   String get savedToSubtitleLibrary => '已儲存到字幕庫';
+
+  @override
+  String get translatedLyricsNotSaved => '翻譯已完成，僅在目前播放中顯示';
 
   @override
   String get saveToLocal => '儲存到本地';
@@ -6876,7 +7148,22 @@ class SZhHant extends SZh {
   String get apiEndpointUrl => 'API 介面地址';
 
   @override
-  String get openaiCompatibleEndpoint => 'OpenAI 相容介面地址';
+  String get apiBaseUrl => 'API 基礎位址';
+
+  @override
+  String get apiProtocol => '介面協議';
+
+  @override
+  String get chatCompletionsProtocol => 'Chat Completions (/chat/completions)';
+
+  @override
+  String get responsesProtocol => 'Responses (/responses)';
+
+  @override
+  String get anthropicProtocol => 'Anthropic Messages (/messages)';
+
+  @override
+  String get openaiCompatibleEndpoint => '系統會自動添加所選協議後綴';
 
   @override
   String get pleaseEnterApiUrl => '請輸入 API 介面地址';
@@ -6996,6 +7283,9 @@ class SZhHant extends SZh {
   String get showSubtitleTagOnCover => '在封面圖上顯示字幕標籤';
 
   @override
+  String get showAgeRatingOnDetail => '在作品詳情頁顯示年齡分級';
+
+  @override
   String get recommendationsLabel => '相關推薦';
 
   @override
@@ -7036,6 +7326,9 @@ class SZhHant extends SZh {
 
   @override
   String get showSubtitleTagOnCard => '顯示作品卡片上的字幕標籤';
+
+  @override
+  String get showAgeRatingOnCard => '顯示作品卡片上的年齡分級';
 
   @override
   String get showOnlineMarks => '顯示線上標記的作品';
@@ -7139,4 +7432,63 @@ class SZhHant extends SZh {
 
   @override
   String get logEmpty => '暫無日誌';
+
+  @override
+  String get proxySettingsOptional => '代理';
+
+  @override
+  String get loginAdvancedSettings => '進階設定';
+
+  @override
+  String proxyEnabled(String address) {
+    return '已啟用：$address';
+  }
+
+  @override
+  String get proxyAddressNotSet => '未設定（預設直連）';
+
+  @override
+  String get proxyHttpDescription => '透過 HTTP 代理連接伺服器';
+
+  @override
+  String get useProxy => '使用代理';
+
+  @override
+  String get proxyAddress => '代理位址';
+
+  @override
+  String get proxyAddressFormat => '格式：主機:連接埠，例如 127.0.0.1:7890';
+
+  @override
+  String get applyProxyAddress => '套用代理位址';
+
+  @override
+  String get invalidProxyAddress => '請輸入有效的 HTTP 代理位址和連接埠';
+
+  @override
+  String get proxyModeDirect => '直連';
+
+  @override
+  String get proxyModeSystem => '系統代理';
+
+  @override
+  String get proxyModeManual => '手動代理';
+
+  @override
+  String get proxyModeDirectDescription => '不使用代理直接連接';
+
+  @override
+  String get proxyModeSystemDescription => '使用作業系統的代理設定';
+
+  @override
+  String get proxyModeManualDescription => '使用下方設定的 HTTP 代理';
+
+  @override
+  String get playlistDisplayFormat => '播放清單版面';
+
+  @override
+  String get playlistDisplayFormatMasonry => '瀑布流';
+
+  @override
+  String get playlistDisplayFormatList => '列表';
 }

@@ -1,25 +1,21 @@
-import 'dart:io' show Platform;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
 import '../providers/works_provider.dart';
-import '../providers/work_card_display_provider.dart';
-import '../widgets/enhanced_work_card.dart';
+import '../utils/scroll_optimization.dart';
 import '../widgets/sort_dialog.dart';
-import '../widgets/pagination_bar.dart';
-import '../widgets/overscroll_next_page_detector.dart';
-import '../services/log_service.dart';
-import '../utils/responsive_grid_helper.dart';
+import '../widgets/works_grid_view.dart';
+import '../widgets/virtualized_sliver_collection.dart';
 import '../utils/snackbar_util.dart';
-import '../widgets/scrollable_appbar.dart';
+import '../widgets/floating_feed_toolbar.dart';
 import '../../l10n/app_localizations.dart';
 import '../widgets/download_fab.dart';
 import '../models/sort_options.dart';
-import '../utils/scroll_optimization.dart';
 import '../utils/subtitle_filter.dart';
 import '../utils/l10n_extensions.dart';
+import '../utils/system_ui_style.dart';
+import '../utils/ui_tokens.dart';
+import '../widgets/async_state_view.dart';
 
 class WorksScreen extends ConsumerStatefulWidget {
   const WorksScreen({super.key});
@@ -32,7 +28,6 @@ class _WorksScreenState extends ConsumerState<WorksScreen>
     with AutomaticKeepAliveClientMixin {
   final ScrollController _scrollController = ScrollController();
 
-  bool _isLoadingMore = false;
   int _slideDirection = 0;
   final Map<DisplayMode, double> _scrollPositions = {
     for (final mode in DisplayMode.values) mode: 0.0,
@@ -77,7 +72,6 @@ class _WorksScreenState extends ConsumerState<WorksScreen>
     final state = ref.read(worksProvider);
     showDialog(
       context: context,
-      barrierDismissible: !Platform.isIOS, // iOS 上防止点击外部区域意外关闭
       builder: (context) => CommonSortDialog(
         currentOption: state.sortOption,
         currentDirection: state.sortDirection,
@@ -93,14 +87,14 @@ class _WorksScreenState extends ConsumerState<WorksScreen>
     );
   }
 
-  Icon _getLayoutIcon(LayoutType layoutType) {
+  IconData _getLayoutIcon(LayoutType layoutType) {
     switch (layoutType) {
       case LayoutType.bigGrid:
-        return const Icon(Icons.grid_3x3);
+        return Icons.grid_3x3;
       case LayoutType.smallGrid:
-        return const Icon(Icons.view_list);
+        return Icons.view_list;
       case LayoutType.list:
-        return const Icon(Icons.view_agenda);
+        return Icons.view_agenda;
     }
   }
 
@@ -115,14 +109,11 @@ class _WorksScreenState extends ConsumerState<WorksScreen>
     }
   }
 
-  Icon _getSubtitleFilterIcon(int subtitleFilter) {
+  IconData _getSubtitleFilterIcon(int subtitleFilter) {
     final mode = SubtitleFilterMode.fromValue(subtitleFilter);
-    return Icon(
-      mode == SubtitleFilterMode.withSubtitles
-          ? Icons.closed_caption
-          : Icons.closed_caption_disabled,
-      color: mode.isActive ? Theme.of(context).colorScheme.primary : null,
-    );
+    return mode == SubtitleFilterMode.withSubtitles
+        ? Icons.closed_caption
+        : Icons.closed_caption_disabled;
   }
 
   void _changeDisplayMode(DisplayMode mode) {
@@ -146,31 +137,6 @@ class _WorksScreenState extends ConsumerState<WorksScreen>
       final clamped = targetOffset.clamp(0.0, safeMax).toDouble();
       _scrollController.jumpTo(clamped);
     });
-  }
-
-  Future<void> _loadMoreForMode(DisplayMode expectedMode) async {
-    if (_isLoadingMore || !mounted) return;
-
-    final latestState = ref.read(worksProvider);
-    if (latestState.displayMode != expectedMode ||
-        latestState.displayMode == DisplayMode.all ||
-        latestState.isLoading ||
-        !latestState.hasMore) {
-      return;
-    }
-
-    _isLoadingMore = true;
-    logOutput(
-        '[WorksScreen] Triggering load more from footer - currentPage: ${latestState.currentPage}');
-
-    try {
-      await ref.read(worksProvider.notifier).loadWorks();
-      logOutput('[WorksScreen] Load more completed');
-    } catch (error) {
-      logOutput('[WorksScreen] Load more error: $error');
-    } finally {
-      _isLoadingMore = false;
-    }
   }
 
   void _handleSwipe(DragEndDetails details) {
@@ -223,677 +189,275 @@ class _WorksScreenState extends ConsumerState<WorksScreen>
     final isRecommendMode = worksState.displayMode == DisplayMode.popular ||
         worksState.displayMode == DisplayMode.recommended;
 
-    final isLandscape =
-        MediaQuery.of(context).orientation == Orientation.landscape;
-    final horizontalPadding = isLandscape ? 24.0 : 8.0;
+    final horizontalPadding = FloatingToolbarLayout.horizontalPadding(context);
+    final topPadding = MediaQuery.paddingOf(context).top;
+    final toolbarTop = topPadding + 8;
+    final contentTopPadding = toolbarTop + 56;
+    final systemOverlayStyle =
+        transparentSystemBarsForBrightness(Theme.of(context).brightness);
 
-    return Scaffold(
-      floatingActionButton: const DownloadFab(),
-      appBar: ScrollableAppBar(
-        toolbarHeight: 56,
-        flexibleSpace: SafeArea(
-          child: Row(
-            children: [
-              // 第一列：可滚动的模式切换按钮
-              Expanded(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: EdgeInsets.symmetric(
-                      horizontal: horizontalPadding, vertical: 8),
-                  child: _buildModeButtons(context, worksState),
-                ),
-              ),
-              // 分隔线
-              Container(
-                height: 28,
-                width: 1,
-                color: Theme.of(context)
-                    .colorScheme
-                    .outlineVariant
-                    .withValues(alpha: 0.5),
-                margin: const EdgeInsets.symmetric(horizontal: 2),
-              ),
-              // 第二列：布局切换按钮
-              IconButton(
-                icon: _getLayoutIcon(worksState.layoutType),
-                iconSize: 22,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                onPressed: () =>
-                    ref.read(worksProvider.notifier).toggleLayoutType(),
-                tooltip: _getLayoutTooltip(worksState.layoutType),
-              ),
-              // 第三列：字幕筛选按钮
-              IconButton(
-                icon: _getSubtitleFilterIcon(worksState.subtitleFilter),
-                iconSize: 22,
-                padding: const EdgeInsets.all(6),
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                onPressed: () =>
-                    ref.read(worksProvider.notifier).toggleSubtitleFilter(),
-                tooltip: SubtitleFilterMode.fromValue(
-                  worksState.subtitleFilter,
-                ).localizedTooltip(context),
-              ),
-              // 第四列：排序按钮
-              Padding(
-                padding: EdgeInsets.only(right: horizontalPadding - 6),
-                child: IconButton(
-                  icon: Icon(
-                    Icons.sort,
-                    color: isRecommendMode ? Colors.grey : null,
+    return AnnotatedRegion(
+      value: systemOverlayStyle,
+      child: Scaffold(
+        floatingActionButton: const DownloadFab(),
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                onHorizontalDragEnd: _handleSwipe,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 250),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  transitionBuilder: (child, animation) {
+                    final direction = _slideDirection == 0
+                        ? 0.0
+                        : (_slideDirection > 0 ? 0.12 : -0.12);
+                    final offsetAnimation = Tween<Offset>(
+                      begin: Offset(direction, 0),
+                      end: Offset.zero,
+                    ).animate(animation);
+                    return FadeTransition(
+                      opacity: animation,
+                      child: SlideTransition(
+                        position: offsetAnimation,
+                        child: child,
+                      ),
+                    );
+                  },
+                  child: KeyedSubtree(
+                    key: ValueKey(worksState.displayMode),
+                    child: _buildBody(
+                      worksState,
+                      EdgeInsets.fromLTRB(
+                        horizontalPadding,
+                        contentTopPadding,
+                        horizontalPadding,
+                        horizontalPadding,
+                      ),
+                    ),
                   ),
-                  iconSize: 22,
-                  padding: const EdgeInsets.all(6),
-                  constraints:
-                      const BoxConstraints(minWidth: 36, minHeight: 36),
-                  onPressed:
-                      isRecommendMode ? null : () => _showSortDialog(context),
-                  tooltip: isRecommendMode
-                      ? S.of(context).recommendedNoSort
-                      : S.of(context).sort,
                 ),
               ),
-            ],
-          ),
-        ),
-      ),
-      body: GestureDetector(
-        onHorizontalDragEnd: _handleSwipe,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 250),
-          switchInCurve: Curves.easeOut,
-          switchOutCurve: Curves.easeIn,
-          transitionBuilder: (child, animation) {
-            final direction = _slideDirection == 0
-                ? 0.0
-                : (_slideDirection > 0 ? 0.12 : -0.12);
-            final offsetAnimation = Tween<Offset>(
-              begin: Offset(direction, 0),
-              end: Offset.zero,
-            ).animate(animation);
-            return FadeTransition(
-              opacity: animation,
-              child: SlideTransition(
-                position: offsetAnimation,
-                child: child,
-              ),
-            );
-          },
-          child: KeyedSubtree(
-            key: ValueKey(worksState.displayMode),
-            child: _buildBody(worksState),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// ===== 构建「全部 / 热门 / 推荐」按钮组 =====
-  Widget _buildModeButtons(BuildContext context, WorksState worksState) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _buildModeButton(
-          context: context,
-          icon: Icons.grid_view,
-          label: S.of(context).displayModeAll,
-          isSelected: worksState.displayMode == DisplayMode.all,
-          index: 0,
-          total: 3,
-          onTap: () => _changeDisplayMode(DisplayMode.all),
-        ),
-        _buildModeButton(
-          context: context,
-          icon: Icons.local_fire_department,
-          label: S.of(context).displayModePopular,
-          isSelected: worksState.displayMode == DisplayMode.popular,
-          index: 1,
-          total: 3,
-          onTap: () => _changeDisplayMode(DisplayMode.popular),
-        ),
-        _buildModeButton(
-          context: context,
-          icon: Icons.auto_awesome,
-          label: S.of(context).displayModeRecommended,
-          isSelected: worksState.displayMode == DisplayMode.recommended,
-          index: 2,
-          total: 3,
-          onTap: () => _changeDisplayMode(DisplayMode.recommended),
-        ),
-      ],
-    );
-  }
-
-  /// ===== 单个模式按钮样式封装 =====
-  Widget _buildModeButton({
-    required BuildContext context,
-    required IconData icon,
-    required String label,
-    required bool isSelected,
-    required VoidCallback onTap,
-    required int index,
-    required int total,
-  }) {
-    final theme = Theme.of(context);
-
-    // 第一个按钮：左侧圆角，右侧方角
-    // 最后一个按钮：左侧方角，右侧圆角
-    // 中间按钮：两侧方角
-    BorderRadius buttonBorderRadius;
-    if (index == 0) {
-      buttonBorderRadius = const BorderRadius.only(
-        topLeft: Radius.circular(16),
-        bottomLeft: Radius.circular(16),
-      );
-    } else if (index == total - 1) {
-      buttonBorderRadius = const BorderRadius.only(
-        topRight: Radius.circular(16),
-        bottomRight: Radius.circular(16),
-      );
-    } else {
-      buttonBorderRadius = BorderRadius.zero;
-    }
-
-    return Padding(
-      padding: const EdgeInsets.only(right: 4),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: buttonBorderRadius,
-          onTap: onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? theme.colorScheme.primaryContainer
-                  : theme.colorScheme.surfaceContainerHighest,
-              borderRadius: buttonBorderRadius,
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: ProgressiveTopScrim(height: topPadding + 72),
+            ),
+            Positioned(
+              top: toolbarTop,
+              left: horizontalPadding,
+              right: horizontalPadding,
+              child: FloatingFeedToolbar(
+                collapseModesWhenNeeded: false,
+                modeActions: _buildModeActions(context, worksState),
+                toolActions: _buildToolActions(
+                  context,
+                  worksState,
+                  isRecommendMode: isRecommendMode,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<FloatingFeedModeAction> _buildModeActions(
+    BuildContext context,
+    WorksState worksState,
+  ) {
+    return [
+      FloatingFeedModeAction(
+        icon: Icons.grid_view,
+        label: S.of(context).displayModeAll,
+        isSelected: worksState.displayMode == DisplayMode.all,
+        onPressed: () => _changeDisplayMode(DisplayMode.all),
+      ),
+      FloatingFeedModeAction(
+        icon: Icons.local_fire_department,
+        label: S.of(context).displayModePopular,
+        isSelected: worksState.displayMode == DisplayMode.popular,
+        onPressed: () => _changeDisplayMode(DisplayMode.popular),
+      ),
+      FloatingFeedModeAction(
+        icon: Icons.auto_awesome,
+        label: S.of(context).displayModeRecommended,
+        isSelected: worksState.displayMode == DisplayMode.recommended,
+        onPressed: () => _changeDisplayMode(DisplayMode.recommended),
+      ),
+    ];
+  }
+
+  List<FloatingFeedToolAction> _buildToolActions(
+    BuildContext context,
+    WorksState worksState, {
+    required bool isRecommendMode,
+  }) {
+    final subtitleMode =
+        SubtitleFilterMode.fromValue(worksState.subtitleFilter);
+    return [
+      FloatingFeedToolAction(
+        icon: _getLayoutIcon(worksState.layoutType),
+        tooltip: _getLayoutTooltip(worksState.layoutType),
+        onPressed: () => ref.read(worksProvider.notifier).toggleLayoutType(),
+      ),
+      FloatingFeedToolAction(
+        icon: _getSubtitleFilterIcon(worksState.subtitleFilter),
+        tooltip: subtitleMode.localizedTooltip(context),
+        isSelected: subtitleMode.isActive,
+        onPressed: () =>
+            ref.read(worksProvider.notifier).toggleSubtitleFilter(),
+      ),
+      FloatingFeedToolAction(
+        icon: Icons.sort,
+        tooltip: isRecommendMode
+            ? S.of(context).recommendedNoSort
+            : S.of(context).sort,
+        onPressed: isRecommendMode ? null : () => _showSortDialog(context),
+      ),
+    ];
+  }
+
+  Widget _buildBody(WorksState worksState, EdgeInsetsGeometry padding) {
+    return _buildLayoutView(worksState, padding);
+  }
+
+  Widget _buildLayoutView(
+    WorksState worksState,
+    EdgeInsetsGeometry padding,
+  ) {
+    final notifier = ref.read(worksProvider.notifier);
+    return WorksGridView(
+      works: worksState.works,
+      layoutType: worksState.layoutType,
+      scrollController: _scrollController,
+      padding: padding,
+      physics: ScrollOptimization.physics,
+      isLoading: worksState.isLoading,
+      isRefreshing: worksState.isLoading && worksState.works.isNotEmpty,
+      isLoadingMore: worksState.isLoadingMore,
+      hasMore: worksState.hasMore,
+      error: worksState.error,
+      loadMoreError: null,
+      onLoadMore:
+          worksState.displayMode == DisplayMode.all ? null : notifier.loadMore,
+      onRetry: notifier.refresh,
+      onRefresh: worksState.works.isEmpty ? null : notifier.refresh,
+      pagination: worksState.displayMode == DisplayMode.all
+          ? VirtualizedPagination(
+              currentPage: worksState.currentPage,
+              pageSize: worksState.pageSize,
+              totalCount: worksState.totalCount,
+              hasMore: worksState.hasMore,
+              isLoading: worksState.isLoading || worksState.isRefreshing,
+              onPreviousPage: notifier.previousPage,
+              onNextPage: notifier.nextPage,
+              onGoToPage: notifier.goToPage,
+              nextPageOnOverscroll: true,
+              scrollDuration: const Duration(milliseconds: 500),
+              scrollCurve: Curves.easeInOut,
+              extraBuilder: worksState.rawWorks.length > worksState.works.length
+                  ? (context) => Text(
+                        S.of(context).pageExcludedNWorks(
+                              worksState.rawWorks.length -
+                                  worksState.works.length,
+                            ),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontSize: 12,
+                        ),
+                      )
+                  : null,
+            )
+          : null,
+      showEndMessage:
+          worksState.displayMode != DisplayMode.all && worksState.isLastPage,
+      loadingBuilder: (context) => AsyncStateView(
+        icon: const CircularProgressIndicator(),
+        message: Text(S.of(context).loading),
+        iconToTitleSpacing: UiSpacing.large,
+      ),
+      errorBuilder: (context, error, retry) => AsyncStateView(
+        icon: Icon(
+          Icons.error_outline,
+          size: 64,
+          color: Theme.of(context).colorScheme.error,
+        ),
+        title: Text(
+          S.of(context).loadFailed,
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        message: Text(
+          error.toString(),
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+          textAlign: TextAlign.center,
+        ),
+        action: ElevatedButton.icon(
+          onPressed: retry,
+          icon: const Icon(Icons.refresh),
+          label: Text(S.of(context).retry),
+        ),
+      ),
+      emptyBuilder: (context) => AsyncStateView(
+        icon: Icon(
+          Icons.audiotrack,
+          size: 64,
+          color: Theme.of(context).colorScheme.outline,
+        ),
+        title: Text(
+          S.of(context).noWorks,
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        message: Text(
+          S.of(context).checkNetworkOrRetry,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+        ),
+      ),
+      endBuilder: (context) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
-                  icon,
+                  Icons.check_circle_outline,
                   size: 16,
-                  color: isSelected
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.onSurfaceVariant,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
-                const SizedBox(width: 4),
+                const SizedBox(width: 8),
                 Text(
-                  label,
+                  S.of(context).reachedEnd,
                   style: TextStyle(
-                    color: isSelected
-                        ? theme.colorScheme.primary
-                        : theme.colorScheme.onSurfaceVariant,
-                    fontSize: 12,
-                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 14,
                   ),
                 ),
               ],
             ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBody(WorksState worksState) {
-    // 错误状态或空状态 - 统一显示
-    if (worksState.works.isEmpty) {
-      // 如果有错误，显示错误信息
-      if (worksState.error != null) {
-        return Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.error_outline,
-                size: 64,
-                color: Theme.of(context).colorScheme.error,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                S.of(context).loadFailed,
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
+            if (worksState.rawWorks.length > worksState.works.length) ...[
               const SizedBox(height: 8),
               Text(
-                worksState.error!,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                S.of(context).excludedNWorks(
+                      worksState.rawWorks.length - worksState.works.length,
                     ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: () => ref.read(worksProvider.notifier).refresh(),
-                icon: const Icon(Icons.refresh),
-                label: Text(S.of(context).retry),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
             ],
-          ),
-        );
-      }
-
-      // 加载中
-      if (worksState.isLoading) {
-        return Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const CircularProgressIndicator(),
-              const SizedBox(height: 16),
-              Text(S.of(context).loading),
-            ],
-          ),
-        );
-      }
-
-      // 空状态
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.audiotrack,
-                size: 64, color: Theme.of(context).colorScheme.outline),
-            const SizedBox(height: 16),
-            Text(
-              S.of(context).noWorks,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              S.of(context).checkNetworkOrRetry,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            ),
           ],
         ),
-      );
-    }
-
-    return RefreshIndicator(
-      onRefresh: () => ref.read(worksProvider.notifier).refresh(),
-      child: Stack(
-        children: [
-          _buildLayoutView(worksState),
-          // 全局加载动画 - 在有数据且正在刷新时显示
-          if (worksState.isLoading && worksState.works.isNotEmpty)
-            const Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SizedBox(
-                height: 3,
-                child: LinearProgressIndicator(),
-              ),
-            ),
-        ],
       ),
     );
   }
-
-  Widget _buildLayoutView(WorksState worksState) {
-    final displaySettings = ref.watch(workCardDisplayProvider);
-
-    switch (worksState.layoutType) {
-      case LayoutType.bigGrid:
-        return _buildGridView(
-          worksState,
-          crossAxisCount: displaySettings.applyCardSize(
-            ResponsiveGridHelper.getBigGridCrossAxisCount(context),
-          ),
-        );
-      case LayoutType.smallGrid:
-        return _buildGridView(
-          worksState,
-          crossAxisCount: displaySettings.applyCardSize(
-            ResponsiveGridHelper.getSmallGridCrossAxisCount(context),
-            minCrossAxisCount: 2,
-          ),
-        );
-      case LayoutType.list:
-        return _buildListView(worksState);
-    }
-  }
-
-  Widget _buildGridView(WorksState worksState, {required int crossAxisCount}) {
-    final isAllMode = worksState.displayMode == DisplayMode.all;
-    final isLandscape =
-        MediaQuery.of(context).orientation == Orientation.landscape;
-
-    // 横屏模式下使用更大的间距，让布局更优雅
-    final spacing = isLandscape ? 24.0 : 8.0;
-    final padding = isLandscape ? 24.0 : 8.0;
-
-    Widget scrollView = CustomScrollView(
-      controller: _scrollController,
-      cacheExtent: ScrollOptimization.cacheExtent,
-      physics: ScrollOptimization.physics,
-      slivers: [
-        SliverPadding(
-          padding: EdgeInsets.all(padding),
-          sliver: SliverMasonryGrid.count(
-            key: ValueKey(
-              'home-grid-${worksState.layoutType.name}-$crossAxisCount',
-            ),
-            crossAxisCount: crossAxisCount,
-            crossAxisSpacing: spacing,
-            mainAxisSpacing: spacing,
-            childCount: worksState.works.length +
-                (!isAllMode && worksState.hasMore ? 1 : 0),
-            itemBuilder: (context, index) {
-              // 热门/推荐模式:在底部显示加载指示器
-              if (!isAllMode && index == worksState.works.length) {
-                return _LoadMoreFooter(
-                  generation:
-                      '${worksState.displayMode.name}-${worksState.currentPage}-${worksState.works.length}',
-                  enabled: !worksState.isLoading && worksState.hasMore,
-                  onVisible: () => _loadMoreForMode(worksState.displayMode),
-                  child: const SizedBox(
-                    height: 100, // 统一加载指示器高度
-                    child: Center(child: CircularProgressIndicator()),
-                  ),
-                );
-              }
-
-              final work = worksState.works[index];
-              return RepaintBoundary(
-                child: EnhancedWorkCard(
-                  work: work,
-                  crossAxisCount: crossAxisCount,
-                ),
-              );
-            },
-          ),
-        ),
-
-        // 热门/推荐模式:到底提示
-        if (!isAllMode && worksState.isLastPage)
-          SliverToBoxAdapter(
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.check_circle_outline,
-                        size: 16,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        S.of(context).reachedEnd,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (worksState.rawWorks.length > worksState.works.length) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      S.of(context).excludedNWorks(
-                          worksState.rawWorks.length - worksState.works.length),
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-
-        // 全部模式:分页控件(集成在瀑布流中) - 始终显示
-        if (isAllMode)
-          SliverPadding(
-            padding: EdgeInsets.fromLTRB(padding, spacing, padding, 24),
-            sliver: SliverToBoxAdapter(
-              child: Column(
-                children: [
-                  PaginationBar(
-                    currentPage: worksState.currentPage,
-                    totalCount: worksState.totalCount,
-                    pageSize: worksState.pageSize,
-                    hasMore: worksState.hasMore,
-                    isLoading: worksState.isLoading,
-                    onPreviousPage: () {
-                      ref.read(worksProvider.notifier).previousPage();
-                      _scrollToTop();
-                    },
-                    onNextPage: () {
-                      ref.read(worksProvider.notifier).nextPage();
-                      _scrollToTop();
-                    },
-                    onGoToPage: (page) {
-                      ref.read(worksProvider.notifier).goToPage(page);
-                      _scrollToTop();
-                    },
-                  ),
-                  if (worksState.rawWorks.length > worksState.works.length) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      S.of(context).pageExcludedNWorks(
-                          worksState.rawWorks.length - worksState.works.length),
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-      ],
-    );
-
-    if (isAllMode) {
-      return OverscrollNextPageDetector(
-        onNextPage: () async {
-          await ref.read(worksProvider.notifier).nextPage();
-          // 等待一帧后滚动到顶部，确保内容已加载
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _scrollToTop();
-          });
-        },
-        hasNextPage: worksState.hasMore,
-        isLoading: worksState.isLoading,
-        child: scrollView,
-      );
-    }
-
-    return scrollView;
-  }
-
-  Widget _buildListView(WorksState worksState) {
-    final isAllMode = worksState.displayMode == DisplayMode.all;
-
-    Widget scrollView = CustomScrollView(
-      controller: _scrollController,
-      cacheExtent: ScrollOptimization.cacheExtent,
-      physics: ScrollOptimization.physics,
-      slivers: [
-        SliverPadding(
-          padding: const EdgeInsets.all(8),
-          sliver: SliverList(
-            delegate: SliverChildBuilderDelegate(
-              (context, index) {
-                // 热门/推荐模式:加载指示器
-                if (!isAllMode &&
-                    index == worksState.works.length &&
-                    worksState.hasMore) {
-                  return _LoadMoreFooter(
-                    generation:
-                        '${worksState.displayMode.name}-${worksState.currentPage}-${worksState.works.length}',
-                    enabled: !worksState.isLoading && worksState.hasMore,
-                    onVisible: () => _loadMoreForMode(worksState.displayMode),
-                    child: const Center(
-                      child: Padding(
-                        padding: EdgeInsets.all(16),
-                        child: CircularProgressIndicator(),
-                      ),
-                    ),
-                  );
-                }
-
-                // 热门/推荐模式:到底提示
-                if (!isAllMode &&
-                    index == worksState.works.length &&
-                    worksState.isLastPage) {
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 24, horizontal: 16),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.check_circle_outline,
-                          size: 16,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          S.of(context).reachedEnd,
-                          style: TextStyle(
-                            color:
-                                Theme.of(context).colorScheme.onSurfaceVariant,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-
-                final work = worksState.works[index];
-                return RepaintBoundary(
-                  child: EnhancedWorkCard(
-                    work: work,
-                    crossAxisCount: 1, // 列表视图
-                  ),
-                );
-              },
-              childCount: worksState.works.length +
-                  (!isAllMode && worksState.hasMore ? 1 : 0) +
-                  (!isAllMode && worksState.isLastPage ? 1 : 0),
-              addRepaintBoundaries: false, // 已手动包裹 RepaintBoundary，避免双重开销
-            ),
-          ),
-        ),
-
-        // 全部模式:分页控件(集成在列表中) - 始终显示
-        if (isAllMode)
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 24), // 统一左右padding为8
-            sliver: SliverToBoxAdapter(
-              child: PaginationBar(
-                currentPage: worksState.currentPage,
-                totalCount: worksState.totalCount,
-                pageSize: worksState.pageSize,
-                hasMore: worksState.hasMore,
-                isLoading: worksState.isLoading,
-                onPreviousPage: () {
-                  ref.read(worksProvider.notifier).previousPage();
-                  _scrollToTop();
-                },
-                onNextPage: () {
-                  ref.read(worksProvider.notifier).nextPage();
-                  _scrollToTop();
-                },
-                onGoToPage: (page) {
-                  ref.read(worksProvider.notifier).goToPage(page);
-                  _scrollToTop();
-                },
-              ),
-            ),
-          ),
-      ],
-    );
-
-    if (isAllMode) {
-      return OverscrollNextPageDetector(
-        onNextPage: () async {
-          await ref.read(worksProvider.notifier).nextPage();
-          // 等待一帧后滚动到顶部，确保内容已加载
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _scrollToTop();
-          });
-        },
-        hasNextPage: worksState.hasMore,
-        isLoading: worksState.isLoading,
-        child: scrollView,
-      );
-    }
-
-    return scrollView;
-  }
-
-  // 滚动到顶部
-  void _scrollToTop() {
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        0,
-        duration: const Duration(milliseconds: 500),
-        curve: Curves.easeInOut,
-      );
-    }
-  }
-}
-
-class _LoadMoreFooter extends StatefulWidget {
-  final Object generation;
-  final bool enabled;
-  final VoidCallback onVisible;
-  final Widget child;
-
-  const _LoadMoreFooter({
-    required this.generation,
-    required this.enabled,
-    required this.onVisible,
-    required this.child,
-  });
-
-  @override
-  State<_LoadMoreFooter> createState() => _LoadMoreFooterState();
-}
-
-class _LoadMoreFooterState extends State<_LoadMoreFooter> {
-  Object? _lastTriggeredGeneration;
-
-  @override
-  void initState() {
-    super.initState();
-    _scheduleIfNeeded();
-  }
-
-  @override
-  void didUpdateWidget(covariant _LoadMoreFooter oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _scheduleIfNeeded();
-  }
-
-  void _scheduleIfNeeded() {
-    if (!widget.enabled || _lastTriggeredGeneration == widget.generation) {
-      return;
-    }
-
-    _lastTriggeredGeneration = widget.generation;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !widget.enabled) return;
-      widget.onVisible();
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.child;
 }

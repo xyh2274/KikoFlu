@@ -1,89 +1,102 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/history_provider.dart';
-import '../widgets/history_work_card.dart';
-import '../widgets/pagination_bar.dart';
+import '../providers/auth_provider.dart';
+import '../utils/work_cover_prefetch.dart';
 import '../utils/scroll_optimization.dart';
+import '../widgets/history_work_card.dart';
+import '../widgets/virtualized_sliver_collection.dart';
 import '../../l10n/app_localizations.dart';
+import '../widgets/confirmation_dialog.dart';
 
 class HistoryScreen extends ConsumerWidget {
-  const HistoryScreen({super.key});
+  const HistoryScreen({
+    super.key,
+    this.topInset = 0,
+  });
+
+  final double topInset;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final historyState = ref.watch(historyProvider);
     final history = historyState.records;
+    final auth = ref.watch(authProvider.select(
+      (value) => (host: value.host ?? '', token: value.token ?? ''),
+    ));
+    final crossAxisCount =
+        (MediaQuery.sizeOf(context).width / 210).ceil().clamp(1, 8);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: history.isEmpty && !historyState.isLoading
-          ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.history,
-                    size: 64,
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    S.of(context).noPlayHistory,
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+      body: VirtualizedSliverCollection(
+        items: history,
+        itemId: (record) => record.work.id,
+        // 瀑布流：tile 高度由卡片内容决定（封面锁 0.72 比例），与已下载页
+        // 同款方案；原 grid 的 childAspectRatio 会把信息区裁剪掉
+        layout: VirtualizedCollectionLayout.masonry,
+        masonryCrossAxisCount: crossAxisCount,
+        masonryCrossAxisSpacing: 12,
+        masonryMainAxisSpacing: 12,
+        padding: const EdgeInsets.all(16),
+        physics: ScrollOptimization.physics,
+        isInitialLoading: historyState.isLoading && history.isEmpty,
+        isRefreshing: historyState.isRefreshing,
+        isLoadingMore: historyState.isLoadingMore,
+        hasMore: historyState.hasMore,
+        error: historyState.error,
+        loadMoreError: historyState.loadMoreError,
+        onRetry: ref.read(historyProvider.notifier).refresh,
+        pagination: VirtualizedPagination(
+          currentPage: historyState.currentPage,
+          pageSize: historyState.pageSize,
+          totalCount: historyState.totalCount,
+          hasMore: historyState.hasMore,
+          isLoading: historyState.isLoading,
+          onPreviousPage: ref.read(historyProvider.notifier).previousPage,
+          onNextPage: ref.read(historyProvider.notifier).nextPage,
+          onGoToPage: ref.read(historyProvider.notifier).goToPage,
+          padding: const EdgeInsets.only(bottom: 80, top: 16),
+          scrollToTop: false,
+        ),
+        sliversBefore: [
+          if (topInset > 0)
+            SliverToBoxAdapter(child: SizedBox(height: topInset)),
+        ],
+        onPrefetch: (records) => prefetchWorkCovers(
+          context,
+          records.map((record) => record.work),
+          host: auth.host,
+          token: auth.token,
+          crossAxisCount: crossAxisCount,
+        ),
+        emptyBuilder: (context) => historyState.isLoading
+            ? const SizedBox.shrink()
+            : Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.history,
+                      size: 64,
+                      color: Theme.of(context).colorScheme.outline,
                     ),
-                  ),
-                ],
-              ),
-            )
-          : CustomScrollView(
-              cacheExtent: ScrollOptimization.cacheExtent,
-              physics: ScrollOptimization.physics,
-              slivers: [
-                SliverPadding(
-                  padding: const EdgeInsets.all(16),
-                  sliver: SliverGrid(
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 210,
-                      childAspectRatio: 0.72,
-                      crossAxisSpacing: 12,
-                      mainAxisSpacing: 12,
-                    ),
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
-                        final record = history[index];
-                        return HistoryWorkCard(record: record);
-                      },
-                      childCount: history.length,
-                    ),
-                  ),
-                ),
-                if (history.isNotEmpty)
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 80, top: 16),
-                      child: PaginationBar(
-                        currentPage: historyState.currentPage,
-                        totalCount: historyState.totalCount,
-                        pageSize: historyState.pageSize,
-                        hasMore: historyState.hasMore,
-                        isLoading: historyState.isLoading,
-                        onGoToPage: (page) {
-                          ref.read(historyProvider.notifier).goToPage(page);
-                        },
-                        onPreviousPage: () {
-                          ref.read(historyProvider.notifier).previousPage();
-                        },
-                        onNextPage: () {
-                          ref.read(historyProvider.notifier).nextPage();
-                        },
+                    const SizedBox(height: 16),
+                    Text(
+                      S.of(context).noPlayHistory,
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
-                  ),
-              ],
-            ),
+                  ],
+                ),
+              ),
+        itemBuilder: (context, record, index) => HistoryWorkCard(
+          key: ValueKey(record.work.id),
+          record: record,
+        ),
+      ),
       floatingActionButton: history.isNotEmpty
           ? FloatingActionButton(
               onPressed: () => _showClearConfirmation(context, ref),
@@ -96,22 +109,12 @@ class HistoryScreen extends ConsumerWidget {
 
   Future<void> _showClearConfirmation(
       BuildContext context, WidgetRef ref) async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(S.of(context).clearHistoryTitle),
-        content: Text(S.of(context).clearHistoryConfirm),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(S.of(context).cancel),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(S.of(context).clear),
-          ),
-        ],
-      ),
+      title: S.of(context).clearHistoryTitle,
+      content: Text(S.of(context).clearHistoryConfirm),
+      confirmLabel: S.of(context).clear,
+      variant: ConfirmationDialogVariant.danger,
     );
 
     if (confirmed == true) {

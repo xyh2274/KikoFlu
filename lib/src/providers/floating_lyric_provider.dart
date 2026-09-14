@@ -18,7 +18,8 @@ final floatingLyricEnabledProvider =
   return FloatingLyricEnabledNotifier(ref);
 });
 
-/// 悬浮字幕触摸开关（仅 Android，默认允许触摸）
+/// 悬浮字幕触摸开关（默认允许触摸）。
+/// 在桌面端关闭触摸后，悬浮字幕会进入点击穿透模式。
 final floatingLyricTouchEnabledProvider =
     StateNotifierProvider<FloatingLyricTouchEnabledNotifier, bool>((ref) {
   return FloatingLyricTouchEnabledNotifier(ref);
@@ -140,7 +141,7 @@ class FloatingLyricNetworkSpeedEnabledNotifier extends StateNotifier<bool> {
 class FloatingLyricEnabledNotifier extends StateNotifier<bool> {
   static const _key = 'floating_lyric_enabled';
   final Ref ref;
-  StreamSubscription? _positionSubscription;
+  Timer? _positionTimer;
   StreamSubscription? _playingSubscription;
   StreamSubscription? _trackSubscription;
   StreamSubscription? _closeSubscription;
@@ -177,7 +178,11 @@ class FloatingLyricEnabledNotifier extends StateNotifier<bool> {
 
     // 如果已启用，尝试显示悬浮窗
     if (state) {
-      _showFloatingLyric();
+      final shown = await _showFloatingLyric();
+      if (!shown) {
+        state = false;
+        await prefs.setBool(_key, false);
+      }
     }
   }
 
@@ -196,12 +201,31 @@ class FloatingLyricEnabledNotifier extends StateNotifier<bool> {
       }
 
       // 显示悬浮窗
-      await _showFloatingLyric();
+      final shown = await _showFloatingLyric();
+      if (!shown) return;
     } else {
       // 停止后台更新
       _stopBackgroundUpdate();
+      // Persist the disabled state before crossing into the secondary engine.
+      // If that engine crashes during a Linux close, the next app launch must
+      // not restore a stale "enabled" preference and reopen the window.
+      state = false;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(_key, false);
+      } catch (e) {
+        // Still attempt to hide the window if persistence is temporarily
+        // unavailable; the next launch can recover from the failed write.
+        _log.error('保存悬浮字幕关闭状态失败: $e',
+            tag: 'FloatingLyric.${Platform.operatingSystem}');
+      }
+      _log.info(
+        '悬浮字幕已持久化为关闭，开始隐藏窗口',
+        tag: 'FloatingLyric.${Platform.operatingSystem}',
+      );
       // 隐藏悬浮窗
       await FloatingLyricService.instance.hide();
+      return;
     }
 
     // 保存状态
@@ -210,7 +234,7 @@ class FloatingLyricEnabledNotifier extends StateNotifier<bool> {
     state = newValue;
   }
 
-  Future<void> _showFloatingLyric() async {
+  Future<bool> _showFloatingLyric() async {
     // 使用 Provider 中的样式，确保与当前设置一致
     final style = ref.read(floatingLyricStyleProvider);
 
@@ -221,9 +245,17 @@ class FloatingLyricEnabledNotifier extends StateNotifier<bool> {
       'cornerRadius': style.cornerRadius,
       'paddingHorizontal': style.paddingHorizontal,
       'paddingVertical': style.paddingVertical,
+      'touchEnabled': ref.read(floatingLyricTouchEnabledProvider),
     };
 
-    await FloatingLyricService.instance.show('♪ - ♪', style: styleMap);
+    final shown = await FloatingLyricService.instance.show(
+      '♪ - ♪',
+      style: styleMap,
+    );
+    if (!shown) {
+      _log.captureOutput('[FloatingLyric] 悬浮窗启动失败');
+      return false;
+    }
 
     // Windows 平台需要给予窗口一点初始化时间，避免立即发送消息导致 CHANNEL_UNREGISTERED
     if (Platform.isWindows || Platform.isLinux) {
@@ -236,14 +268,18 @@ class FloatingLyricEnabledNotifier extends StateNotifier<bool> {
     // 2. 如果 Provider 在 show 执行期间加载完成并尝试 updateStyle 但失败了（因为窗口还没创建好），这里可以补救。
     ref.read(floatingLyricStyleProvider.notifier).applyStyle();
 
-    // 应用触摸设置（Android）
-    if (Platform.isAndroid) {
+    // 应用触摸设置（Android、Windows、Linux、macOS）
+    if (Platform.isAndroid ||
+        Platform.isWindows ||
+        Platform.isLinux ||
+        Platform.isMacOS) {
       final touchEnabled = ref.read(floatingLyricTouchEnabledProvider);
       await FloatingLyricService.instance.setTouchEnabled(touchEnabled);
     }
 
     // 启动后台更新
     _startBackgroundUpdate();
+    return true;
   }
 
   /// 启动后台更新监听
@@ -254,10 +290,11 @@ class FloatingLyricEnabledNotifier extends StateNotifier<bool> {
     // 确保字幕自动加载器始终激活（即使在后台）
     ref.read(lyricAutoLoaderProvider);
 
-    // 监听播放位置变化，每次变化都更新字幕
-    _positionSubscription =
-        AudioPlayerService.instance.positionStream.listen((_) {
-      _updateLyricInBackground();
+    // 独立的低延迟计时器只在悬浮字幕启用期间运行。
+    _positionTimer = Timer.periodic(const Duration(milliseconds: 50), (_) {
+      if (AudioPlayerService.instance.playing) {
+        _updateLyricInBackground();
+      }
     });
 
     // 监听播放状态变化
@@ -280,14 +317,16 @@ class FloatingLyricEnabledNotifier extends StateNotifier<bool> {
         // 触发字幕加载
         if (track != null) {
           final fileListState = ref.read(fileListControllerProvider);
-          if (fileListState.files.isNotEmpty) {
+          if (fileListState.matches(track)) {
             _log.captureOutput('[FloatingLyric] 主动触发字幕加载');
             ref.read(lyricControllerProvider.notifier).loadLyricForTrack(
                   track,
                   fileListState.files,
                 );
           } else {
-            _log.captureOutput('[FloatingLyric] 文件列表为空，无法加载字幕');
+            _log.captureOutput(
+              '[FloatingLyric] 当前字幕文件树不匹配，等待自动恢复',
+            );
           }
         }
       } else {
@@ -315,8 +354,8 @@ class FloatingLyricEnabledNotifier extends StateNotifier<bool> {
 
   /// 停止后台更新监听
   void _stopBackgroundUpdate() {
-    _positionSubscription?.cancel();
-    _positionSubscription = null;
+    _positionTimer?.cancel();
+    _positionTimer = null;
     _playingSubscription?.cancel();
     _playingSubscription = null;
     _trackSubscription?.cancel();

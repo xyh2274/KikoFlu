@@ -32,6 +32,68 @@ void main() {
     expect(preferences.targetLanguage, TranslationTargetLanguage.followApp);
   });
 
+  test('translated lyrics auto-save defaults to enabled and persists',
+      () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    expect(container.read(autoSaveTranslatedLyricsProvider), isTrue);
+    await _pumpAsyncPreferenceLoad();
+    expect(container.read(autoSaveTranslatedLyricsProvider), isTrue);
+
+    final notifier =
+        container.read(autoSaveTranslatedLyricsProvider.notifier);
+    await notifier.setEnabled(false);
+
+    expect(container.read(autoSaveTranslatedLyricsProvider), isFalse);
+    final prefs = await SharedPreferences.getInstance();
+    expect(
+      prefs.getBool(AutoSaveTranslatedLyricsNotifier.preferenceKey),
+      isFalse,
+    );
+  });
+
+  test('translated lyrics auto-save loads a disabled preference', () async {
+    SharedPreferences.setMockInitialValues({
+      AutoSaveTranslatedLyricsNotifier.preferenceKey: false,
+    });
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    expect(container.read(autoSaveTranslatedLyricsProvider), isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(container.read(autoSaveTranslatedLyricsProvider), isFalse);
+  });
+
+  test('translated lyrics auto-save resolves persisted value before use',
+      () async {
+    SharedPreferences.setMockInitialValues({
+      AutoSaveTranslatedLyricsNotifier.preferenceKey: false,
+    });
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    final enabled = await container
+        .read(autoSaveTranslatedLyricsProvider.notifier)
+        .resolvedEnabled();
+
+    expect(enabled, isFalse);
+  });
+
+  test('local auto-save change wins over an unfinished preference load',
+      () async {
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final notifier =
+        container.read(autoSaveTranslatedLyricsProvider.notifier);
+
+    await notifier.setEnabled(false);
+    await notifier.resolvedEnabled();
+
+    expect(container.read(autoSaveTranslatedLyricsProvider), isFalse);
+  });
+
   test('translation language preferences load and persist target values',
       () async {
     SharedPreferences.setMockInitialValues({

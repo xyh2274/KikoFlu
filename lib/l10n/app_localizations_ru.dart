@@ -323,6 +323,11 @@ class SRu extends S {
   String get includeMode => 'Включить';
 
   @override
+  String includeModeTapAgainHint(String searchType) {
+    return 'Включить: $searchType (нажмите ещё раз для режима исключения)';
+  }
+
+  @override
   String get noResults => 'Нет результатов';
 
   @override
@@ -389,6 +394,18 @@ class SRu extends S {
       'Заблокировано — удерживайте субтитры для разблокировки';
 
   @override
+  String get floatingLyricClickThrough =>
+      'Сквозные клики для плавающих субтитров';
+
+  @override
+  String get floatingLyricClickThroughEnabled =>
+      'Включено — субтитры игнорируют действия мыши';
+
+  @override
+  String get floatingLyricClickThroughDisabled =>
+      'Выключено — субтитры можно перетаскивать';
+
+  @override
   String get floatingFPS => 'Показать FPS';
 
   @override
@@ -429,6 +446,16 @@ class SRu extends S {
       'Ограничить количество одновременных задач загрузки';
 
   @override
+  String maxConcurrentDownloadsValue(int count) {
+    return 'Одновременных загрузок: $count';
+  }
+
+  @override
+  String maxConcurrentDownloadsCount(int count) {
+    return '$count одновременно';
+  }
+
+  @override
   String get cacheManagement => 'Управление кешем';
 
   @override
@@ -449,11 +476,24 @@ class SRu extends S {
   String get uiSettingsSubtitle => 'Плеер, страница деталей, карточки и т.д.';
 
   @override
+  String get liquidGlassNavigation => 'Навигация Liquid Glass';
+
+  @override
+  String get liquidGlassNavigationDesc =>
+      'Стеклянная навигация и мини-плеер; включено по умолчанию на платформах Apple с ОС 26+.';
+
+  @override
+  String get fallbackGlassTransparency => 'Прозрачность Liquid Glass';
+
+  @override
+  String get fallbackGlassTransparencyDesc =>
+      'Прозрачность стекла, отрисованного приложением.';
+
+  @override
   String get preferenceSettings => 'Предпочтения';
 
   @override
-  String get preferenceSettingsSubtitle =>
-      'Переводчик, блокировки, аудио и т.д.';
+  String get preferenceSettingsSubtitle => 'Перевод, воспроизведение и сеть';
 
   @override
   String get aboutTitle => 'О приложении';
@@ -605,6 +645,12 @@ class SRu extends S {
 
   @override
   String get deselectAll => 'Снять выделение';
+
+  @override
+  String get collapseAll => 'Свернуть все';
+
+  @override
+  String get expandAll => 'Развернуть все';
 
   @override
   String get select => 'Выбрать';
@@ -863,6 +909,14 @@ class SRu extends S {
   String get translationTargetLanguage => 'Целевой язык';
 
   @override
+  String get autoSaveTranslatedLyrics =>
+      'Автоматически сохранять переведенный текст';
+
+  @override
+  String get autoSaveTranslatedLyricsDesc =>
+      'Сохранять перевод в библиотеку; иначе показывать временно.';
+
+  @override
   String get selectTranslationTargetLanguage => 'Выберите целевой язык:';
 
   @override
@@ -923,13 +977,47 @@ class SRu extends S {
   String get llmSettings => 'Настройки LLM';
 
   @override
-  String get llmSettingsSubtitle => 'API URL, ключ и модель';
+  String get llmSettingsSubtitle => 'URL API, протокол, ключ и модель';
 
   @override
   String get audioFormatPreference => 'Аудиоформат';
 
   @override
   String get audioFormatSubtitle => 'Приоритет аудиоформатов';
+
+  @override
+  String get audioTapPlaylistMode => 'Режим добавления в плейлист';
+
+  @override
+  String get selectAudioTapPlaylistMode =>
+      'Выберите, как нажатие на аудио изменяет плейлист:';
+
+  @override
+  String get audioTapPlaylistModeReplace => 'Режим замены';
+
+  @override
+  String get audioTapPlaylistModeReplaceDescription =>
+      'Заменить текущий плейлист всеми доступными аудиофайлами из папки выбранного файла.';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectory => 'Режим добавления';
+
+  @override
+  String get audioTapPlaylistModeAppendDirectoryDescription =>
+      'Добавить в конец все доступные аудиофайлы из папки выбранного файла. Дубликаты не добавляются.';
+
+  @override
+  String get audioTapPlaylistModeAppendSingle => 'Добавление одного аудио';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleDescription =>
+      'Добавить в конец только выбранный аудиофайл. Дубликаты не добавляются.';
+
+  @override
+  String get audioTapPlaylistModeAppendChip => 'Режим добавления';
+
+  @override
+  String get audioTapPlaylistModeAppendSingleChip => 'Добавление одного аудио';
 
   @override
   String get preloadNextTitle => 'Предзагрузка следующего';
@@ -972,17 +1060,31 @@ class SRu extends S {
 
   @override
   String get keepScreenAwakeDesc =>
-      'Если включено, экран не будет гаснуть при наличии аудиодорожки, чтобы было удобнее читать субтитры.';
+      'Не выключать экран во время воспроизведения';
 
   @override
   String get audioHaptics => 'Аудиотактильная отдача (Beta)';
 
   @override
   String get audioHapticsDesc =>
-      'Только для загруженного аудио и только на переднем плане. Устройство вибрирует в соответствии с аудиопризнаками. Может увеличить расход батареи.';
+      'Вибрация с загруженным аудио только на переднем плане';
 
   @override
   String get audioHapticsIntensity => 'Интенсивность';
+
+  @override
+  String get audioGain => 'Глобальное усиление звука';
+
+  @override
+  String get audioGainDesc =>
+      '0 дБ — исходный звук; чрезмерное усиление искажает звук и опасно для слуха';
+
+  @override
+  String get audioGainAttenuationDesc =>
+      'Ослабить весь звук; 0 дБ — исходный уровень';
+
+  @override
+  String get audioGainPassthroughDesc => 'Недоступно при сквозном выводе звука';
 
   @override
   String get blockingSettings => 'Блокировки';
@@ -995,11 +1097,10 @@ class SRu extends S {
 
   @override
   String get audioPassthroughDescWindows =>
-      'Включить эксклюзивный режим WASAPI для lossless (требуется перезапуск)';
+      'Эксклюзивный вывод WASAPI (нужен перезапуск)';
 
   @override
-  String get audioPassthroughDescMac =>
-      'Включить эксклюзивный режим CoreAudio для lossless';
+  String get audioPassthroughDescMac => 'Эксклюзивный вывод CoreAudio';
 
   @override
   String get audioPassthroughDisableDesc => 'Отключить режим аудио-прохода';
@@ -1679,31 +1780,27 @@ class SRu extends S {
   String get surfaceColor => 'Поверхность';
 
   @override
-  String get playerButtonSettingsSubtitle =>
-      'Настроить порядок кнопок управления плеером';
+  String get playerButtonSettingsSubtitle => 'Порядок кнопок плеера';
 
   @override
   String get playerLyricStyleSubtitle =>
-      'Настроить стиль субтитров мини- и полноэкранного плеера';
+      'Стиль текста в мини- и полноэкранном плеере';
 
   @override
-  String get workDetailDisplaySubtitle =>
-      'Управление информацией на странице деталей';
+  String get workDetailDisplaySubtitle => 'Содержимое страницы работы';
 
   @override
-  String get workCardDisplaySubtitle =>
-      'Управление информацией на карточках работ';
+  String get workCardDisplaySubtitle => 'Содержимое карточек работ';
 
   @override
-  String get myTabsDisplaySubtitle =>
-      'Управление отображением вкладок на странице «Моё»';
+  String get myTabsDisplaySubtitle => 'Вкладки на странице «Моё»';
 
   @override
   String get pageSizeSettings => 'Элементов на странице';
 
   @override
   String pageSizeCurrent(int size) {
-    return 'Текущее: $size элементов/стр.';
+    return '$size элементов на странице';
   }
 
   @override
@@ -1724,21 +1821,20 @@ class SRu extends S {
   String get autoSwitchedToLlm => 'Автопереключение: перевод LLM';
 
   @override
-  String get translationDescGoogle => 'Требуется доступ к сервисам Google';
+  String get translationDescGoogle => 'Требуются сервисы Google';
 
   @override
-  String get translationDescYoudao => 'Работает с сетью по умолчанию';
+  String get translationDescYoudao => 'Использует текущую сеть';
 
   @override
-  String get translationDescMicrosoft => 'Работает с сетью по умолчанию';
+  String get translationDescMicrosoft => 'Использует текущую сеть';
 
   @override
-  String get translationDescLlm =>
-      'OpenAI-совместимый API, требуется ручная настройка API Key';
+  String get translationDescLlm => 'Требуется OpenAI-совместимый API';
 
   @override
   String get audioPassthroughDescAndroid =>
-      'Разрешить вывод необработанного битового потока (AC3/DTS) на внешний декодер. Может занять эксклюзивный доступ к аудио.';
+      'Передавать AC3/DTS на внешний декодер';
 
   @override
   String get permissionExplanation => 'Описание разрешений';
@@ -1930,6 +2026,16 @@ class SRu extends S {
   String get supplementComparing => 'Сравнение онлайн и локальных файлов...';
 
   @override
+  String supplementComparingProgress(Object count, Object total) {
+    return 'Сравнение $count/$total...';
+  }
+
+  @override
+  String supplementCompareFailed(Object count) {
+    return 'Не удалось сравнить $count работ(ы), пропущено';
+  }
+
+  @override
   String supplementCheckFailed(Object error) {
     return 'Не удалось сравнить онлайн-файлы: $error';
   }
@@ -1947,6 +2053,9 @@ class SRu extends S {
   String supplementDownloadFailed(Object error) {
     return 'Ошибка дополнительной загрузки: $error';
   }
+
+  @override
+  String get supplementTaskBadge => 'Дополнение';
 
   @override
   String get playlistLink => 'Ссылка на плейлист';
@@ -2188,7 +2297,7 @@ class SRu extends S {
 
   @override
   String get lyricTranslationConfirmMessage =>
-      'KikoFlu переведет текст текущего трека с текущими настройками перевода. После завершения перевод сразу отобразится и будет сохранен в папку «Сохраненные» библиотеки субтитров как одноименный файл .lrc с заменой существующего файла. Если переключить трек во время перевода, этот результат будет отброшен.';
+      'Перевести текст текущего трека и сразу показать результат. При включенном автосохранении одноименный файл .lrc в библиотеке субтитров будет перезаписан. Если переключить трек во время перевода, результат будет отброшен.';
 
   @override
   String get unlock => 'Разблокировать';
@@ -2204,23 +2313,7 @@ class SRu extends S {
   String get floatingSubtitle => 'Плавающие субтитры';
 
   @override
-  String get appendMode => 'Режим добавления';
-
-  @override
-  String get appendModeStatusOn => 'Режим добавления: Вкл';
-
-  @override
-  String get appendModeStatusOff => 'Режим добавления: Выкл';
-
-  @override
   String get playlistEmpty => 'Плейлист пуст';
-
-  @override
-  String get appendModeEnabled => 'Режим добавления включён';
-
-  @override
-  String get appendModeHint =>
-      'Следующие нажатия на аудио добавят треки в конец текущего плейлиста, а не заменят его.\nДубликаты не добавляются.';
 
   @override
   String get gotIt => 'Понятно';
@@ -2861,6 +2954,10 @@ class SRu extends S {
   String get restoreDefaultSettings => 'Восстановить настройки по умолчанию';
 
   @override
+  String get confirmRestoreDefaultSettings =>
+      'Восстановить настройки по умолчанию?';
+
+  @override
   String get guideInPrefix => 'В ';
 
   @override
@@ -3086,6 +3183,10 @@ class SRu extends S {
 
   @override
   String get savedToSubtitleLibrary => 'Сохранено в библиотеку субтитров';
+
+  @override
+  String get translatedLyricsNotSaved =>
+      'Перевод завершен; он отображается только во время текущего воспроизведения.';
 
   @override
   String get saveToLocal => 'Сохранить локально';
@@ -3442,7 +3543,23 @@ class SRu extends S {
   String get apiEndpointUrl => 'URL-адрес API';
 
   @override
-  String get openaiCompatibleEndpoint => 'URL-адрес, совместимый с OpenAI';
+  String get apiBaseUrl => 'Базовый URL API';
+
+  @override
+  String get apiProtocol => 'Протокол API';
+
+  @override
+  String get chatCompletionsProtocol => 'Chat Completions (/chat/completions)';
+
+  @override
+  String get responsesProtocol => 'Responses (/responses)';
+
+  @override
+  String get anthropicProtocol => 'Anthropic Messages (/messages)';
+
+  @override
+  String get openaiCompatibleEndpoint =>
+      'Суффикс выбранного протокола добавляется автоматически';
 
   @override
   String get pleaseEnterApiUrl => 'Введите URL-адрес API';
@@ -3570,6 +3687,10 @@ class SRu extends S {
   String get showSubtitleTagOnCover => 'Показывать метку субтитров на обложке';
 
   @override
+  String get showAgeRatingOnDetail =>
+      'Показывать возрастной рейтинг на странице произведения';
+
+  @override
   String get recommendationsLabel => 'Похожие рекомендации';
 
   @override
@@ -3614,6 +3735,10 @@ class SRu extends S {
   @override
   String get showSubtitleTagOnCard =>
       'Показывать метку субтитров на карточке произведения';
+
+  @override
+  String get showAgeRatingOnCard =>
+      'Показывать возрастной рейтинг на карточке произведения';
 
   @override
   String get showOnlineMarks => 'Показывать произведения с онлайн-метками';
@@ -3725,4 +3850,66 @@ class SRu extends S {
 
   @override
   String get logEmpty => 'Логов пока нет';
+
+  @override
+  String get proxySettingsOptional => 'Прокси';
+
+  @override
+  String get loginAdvancedSettings => 'Расширенные настройки';
+
+  @override
+  String proxyEnabled(String address) {
+    return 'Включено: $address';
+  }
+
+  @override
+  String get proxyAddressNotSet => 'Не задан (прямое подключение)';
+
+  @override
+  String get proxyHttpDescription => 'Подключаться через HTTP-прокси';
+
+  @override
+  String get useProxy => 'Использовать прокси';
+
+  @override
+  String get proxyAddress => 'Адрес прокси';
+
+  @override
+  String get proxyAddressFormat => 'Формат: хост:порт, например 127.0.0.1:7890';
+
+  @override
+  String get applyProxyAddress => 'Применить адрес прокси';
+
+  @override
+  String get invalidProxyAddress =>
+      'Введите корректный адрес и порт HTTP-прокси';
+
+  @override
+  String get proxyModeDirect => 'Прямое подключение';
+
+  @override
+  String get proxyModeSystem => 'Системный прокси';
+
+  @override
+  String get proxyModeManual => 'Ручной прокси';
+
+  @override
+  String get proxyModeDirectDescription => 'Подключаться без прокси';
+
+  @override
+  String get proxyModeSystemDescription =>
+      'Использовать настройки прокси операционной системы';
+
+  @override
+  String get proxyModeManualDescription =>
+      'Использовать настроенный ниже HTTP-прокси';
+
+  @override
+  String get playlistDisplayFormat => 'Вид плейлиста';
+
+  @override
+  String get playlistDisplayFormatMasonry => 'Мозаика';
+
+  @override
+  String get playlistDisplayFormatList => 'Список';
 }

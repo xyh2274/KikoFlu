@@ -9,7 +9,7 @@ enum DownloadStatus {
 }
 
 class DownloadTask extends Equatable {
-  final String id; // 使用 hash 作为唯一标识
+  final String id; // 作品内资源身份，用于下载调度和状态更新
   final int workId;
   final String workTitle;
   final String fileName;
@@ -24,6 +24,7 @@ class DownloadTask extends Equatable {
   final DateTime createdAt;
   final DateTime? completedAt;
   final Map<String, dynamic>? workMetadata; // 作品详情元数据，用于离线预览
+  final bool isSupplemental; // 补充下载标记：由"补充下载"创建，便于列表复查管理
 
   const DownloadTask({
     required this.id,
@@ -41,7 +42,20 @@ class DownloadTask extends Equatable {
     required this.createdAt,
     this.completedAt,
     this.workMetadata,
+    this.isSupplemental = false,
   });
+
+  static String createId({
+    required int workId,
+    required String? hash,
+    required String fileName,
+  }) {
+    final normalizedHash = hash?.trim();
+    if (normalizedHash != null && normalizedHash.isNotEmpty) {
+      return '$workId:hash:$normalizedHash';
+    }
+    return '$workId:path:$fileName';
+  }
 
   double get progress {
     if (totalBytes == null || totalBytes == 0) return 0.0;
@@ -64,6 +78,7 @@ class DownloadTask extends Equatable {
     DateTime? createdAt,
     DateTime? completedAt,
     Map<String, dynamic>? workMetadata,
+    bool? isSupplemental,
   }) {
     return DownloadTask(
       id: id ?? this.id,
@@ -81,6 +96,7 @@ class DownloadTask extends Equatable {
       createdAt: createdAt ?? this.createdAt,
       completedAt: completedAt ?? this.completedAt,
       workMetadata: workMetadata ?? this.workMetadata,
+      isSupplemental: isSupplemental ?? this.isSupplemental,
     );
   }
 
@@ -100,18 +116,22 @@ class DownloadTask extends Equatable {
       'error': error,
       'createdAt': createdAt.toIso8601String(),
       'completedAt': completedAt?.toIso8601String(),
+      'isSupplemental': isSupplemental,
       // workMetadata 不序列化到 SharedPreferences，会从硬盘的 work_metadata.json 加载
     };
   }
 
   factory DownloadTask.fromJson(Map<String, dynamic> json) {
+    final workId = json['workId'] as int;
+    final fileName = json['fileName'] as String;
+    final hash = json['hash'] as String?;
     return DownloadTask(
-      id: json['id'] as String,
-      workId: json['workId'] as int,
+      id: createId(workId: workId, hash: hash, fileName: fileName),
+      workId: workId,
       workTitle: json['workTitle'] as String,
-      fileName: json['fileName'] as String,
+      fileName: fileName,
       downloadUrl: json['downloadUrl'] as String,
-      hash: json['hash'] as String?,
+      hash: hash,
       totalBytes: json['totalBytes'] as int?,
       downloadedBytes: json['downloadedBytes'] as int? ?? 0,
       priority: json['priority'] as int? ?? 0,
@@ -125,6 +145,7 @@ class DownloadTask extends Equatable {
       completedAt: json['completedAt'] != null
           ? DateTime.parse(json['completedAt'] as String)
           : null,
+      isSupplemental: json['isSupplemental'] as bool? ?? false,
       // workMetadata 不从 SharedPreferences 加载，会在启动时从硬盘同步
       workMetadata: null,
     );
@@ -147,5 +168,6 @@ class DownloadTask extends Equatable {
         createdAt,
         completedAt,
         workMetadata,
+        isSupplemental,
       ];
 }

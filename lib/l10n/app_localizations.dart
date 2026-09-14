@@ -65,7 +65,7 @@ import 'app_localizations_zh.dart';
 /// property.
 abstract class S {
   S(String locale)
-      : localeName = intl.Intl.canonicalizedLocale(locale.toString());
+    : localeName = intl.Intl.canonicalizedLocale(locale.toString());
 
   final String localeName;
 
@@ -87,11 +87,11 @@ abstract class S {
   /// of delegates is preferred or required.
   static const List<LocalizationsDelegate<dynamic>> localizationsDelegates =
       <LocalizationsDelegate<dynamic>>[
-    delegate,
-    GlobalMaterialLocalizations.delegate,
-    GlobalCupertinoLocalizations.delegate,
-    GlobalWidgetsLocalizations.delegate,
-  ];
+        delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+      ];
 
   /// A list of this localizations delegate's supported locales.
   static const List<Locale> supportedLocales = <Locale>[
@@ -99,7 +99,7 @@ abstract class S {
     Locale('ja'),
     Locale('ru'),
     Locale('zh'),
-    Locale.fromSubtags(languageCode: 'zh', scriptCode: 'Hant')
+    Locale.fromSubtags(languageCode: 'zh', scriptCode: 'Hant'),
   ];
 
   /// No description provided for @appTitle.
@@ -708,6 +708,12 @@ abstract class S {
   /// **'Include'**
   String get includeMode;
 
+  /// No description provided for @includeModeTapAgainHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Include: {searchType} (tap again to switch to exclude mode)'**
+  String includeModeTapAgainHint(String searchType);
+
   /// No description provided for @noResults.
   ///
   /// In en, this message translates to:
@@ -828,6 +834,24 @@ abstract class S {
   /// **'Locked - Long press floating lyrics to unlock'**
   String get floatingLyricTouchDisabled;
 
+  /// No description provided for @floatingLyricClickThrough.
+  ///
+  /// In en, this message translates to:
+  /// **'Floating Lyric Click-Through'**
+  String get floatingLyricClickThrough;
+
+  /// No description provided for @floatingLyricClickThroughEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enabled - Floating lyrics ignore mouse input'**
+  String get floatingLyricClickThroughEnabled;
+
+  /// No description provided for @floatingLyricClickThroughDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Disabled - Floating lyrics can be dragged'**
+  String get floatingLyricClickThroughDisabled;
+
   /// No description provided for @floatingFPS.
   ///
   /// In en, this message translates to:
@@ -900,6 +924,18 @@ abstract class S {
   /// **'Limit simultaneous download tasks'**
   String get maxConcurrentDownloadsSubtitle;
 
+  /// No description provided for @maxConcurrentDownloadsValue.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} downloading at the same time'**
+  String maxConcurrentDownloadsValue(int count);
+
+  /// No description provided for @maxConcurrentDownloadsCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} concurrent'**
+  String maxConcurrentDownloadsCount(int count);
+
   /// No description provided for @cacheManagement.
   ///
   /// In en, this message translates to:
@@ -936,6 +972,30 @@ abstract class S {
   /// **'Player, detail page, cards, etc.'**
   String get uiSettingsSubtitle;
 
+  /// No description provided for @liquidGlassNavigation.
+  ///
+  /// In en, this message translates to:
+  /// **'Liquid Glass Navigation'**
+  String get liquidGlassNavigation;
+
+  /// No description provided for @liquidGlassNavigationDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Glass navigation and mini player; enabled by default on Apple OS 26+.'**
+  String get liquidGlassNavigationDesc;
+
+  /// No description provided for @fallbackGlassTransparency.
+  ///
+  /// In en, this message translates to:
+  /// **'Liquid Glass Transparency'**
+  String get fallbackGlassTransparency;
+
+  /// No description provided for @fallbackGlassTransparencyDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Adjust app-rendered glass transparency.'**
+  String get fallbackGlassTransparencyDesc;
+
   /// No description provided for @preferenceSettings.
   ///
   /// In en, this message translates to:
@@ -945,7 +1005,7 @@ abstract class S {
   /// No description provided for @preferenceSettingsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Translation source, blocking, audio preferences, etc.'**
+  /// **'Translation, playback, and network'**
   String get preferenceSettingsSubtitle;
 
   /// No description provided for @aboutTitle.
@@ -1223,6 +1283,18 @@ abstract class S {
   /// In en, this message translates to:
   /// **'Deselect All'**
   String get deselectAll;
+
+  /// No description provided for @collapseAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse All'**
+  String get collapseAll;
+
+  /// No description provided for @expandAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Expand All'**
+  String get expandAll;
 
   /// No description provided for @select.
   ///
@@ -1674,6 +1746,18 @@ abstract class S {
   /// **'Target Language'**
   String get translationTargetLanguage;
 
+  /// No description provided for @autoSaveTranslatedLyrics.
+  ///
+  /// In en, this message translates to:
+  /// **'Automatically save translated lyrics'**
+  String get autoSaveTranslatedLyrics;
+
+  /// No description provided for @autoSaveTranslatedLyricsDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Save translations to the subtitle library; otherwise show them temporarily.'**
+  String get autoSaveTranslatedLyricsDesc;
+
   /// No description provided for @selectTranslationTargetLanguage.
   ///
   /// In en, this message translates to:
@@ -1791,7 +1875,7 @@ abstract class S {
   /// No description provided for @llmSettingsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Configure API URL, Key, and model'**
+  /// **'API URL, protocol, key, and model'**
   String get llmSettingsSubtitle;
 
   /// No description provided for @audioFormatPreference.
@@ -1803,8 +1887,68 @@ abstract class S {
   /// No description provided for @audioFormatSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Set audio format priority order'**
+  /// **'Audio format priority'**
   String get audioFormatSubtitle;
+
+  /// No description provided for @audioTapPlaylistMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Playlist Add Mode'**
+  String get audioTapPlaylistMode;
+
+  /// No description provided for @selectAudioTapPlaylistMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose how tapping audio updates the playlist:'**
+  String get selectAudioTapPlaylistMode;
+
+  /// No description provided for @audioTapPlaylistModeReplace.
+  ///
+  /// In en, this message translates to:
+  /// **'Replace Mode'**
+  String get audioTapPlaylistModeReplace;
+
+  /// No description provided for @audioTapPlaylistModeReplaceDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Replace the current playlist with every playable audio file in the tapped file\'s folder.'**
+  String get audioTapPlaylistModeReplaceDescription;
+
+  /// No description provided for @audioTapPlaylistModeAppendDirectory.
+  ///
+  /// In en, this message translates to:
+  /// **'Append Mode'**
+  String get audioTapPlaylistModeAppendDirectory;
+
+  /// No description provided for @audioTapPlaylistModeAppendDirectoryDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Append every playable audio file in the tapped file\'s folder. Existing tracks are not duplicated.'**
+  String get audioTapPlaylistModeAppendDirectoryDescription;
+
+  /// No description provided for @audioTapPlaylistModeAppendSingle.
+  ///
+  /// In en, this message translates to:
+  /// **'Single-Audio Append Mode'**
+  String get audioTapPlaylistModeAppendSingle;
+
+  /// No description provided for @audioTapPlaylistModeAppendSingleDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Append only the tapped audio file. Existing tracks are not duplicated.'**
+  String get audioTapPlaylistModeAppendSingleDescription;
+
+  /// No description provided for @audioTapPlaylistModeAppendChip.
+  ///
+  /// In en, this message translates to:
+  /// **'Append Mode'**
+  String get audioTapPlaylistModeAppendChip;
+
+  /// No description provided for @audioTapPlaylistModeAppendSingleChip.
+  ///
+  /// In en, this message translates to:
+  /// **'Single-Audio Append Mode'**
+  String get audioTapPlaylistModeAppendSingleChip;
 
   /// No description provided for @preloadNextTitle.
   ///
@@ -1875,7 +2019,7 @@ abstract class S {
   /// No description provided for @keepScreenAwakeDesc.
   ///
   /// In en, this message translates to:
-  /// **'Keep the screen on while an audio track is active for easier subtitle reading.'**
+  /// **'Keep the screen on during playback'**
   String get keepScreenAwakeDesc;
 
   /// No description provided for @audioHaptics.
@@ -1887,7 +2031,7 @@ abstract class S {
   /// No description provided for @audioHapticsDesc.
   ///
   /// In en, this message translates to:
-  /// **'Downloaded audio only, foreground only. Make the device vibrate with audio features. May increase battery use.'**
+  /// **'Vibrate with downloaded audio while the app is foregrounded'**
   String get audioHapticsDesc;
 
   /// No description provided for @audioHapticsIntensity.
@@ -1895,6 +2039,30 @@ abstract class S {
   /// In en, this message translates to:
   /// **'Intensity'**
   String get audioHapticsIntensity;
+
+  /// No description provided for @audioGain.
+  ///
+  /// In en, this message translates to:
+  /// **'Global Audio Gain'**
+  String get audioGain;
+
+  /// No description provided for @audioGainDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'0 dB is original audio; excessive boost may distort or damage hearing'**
+  String get audioGainDesc;
+
+  /// No description provided for @audioGainAttenuationDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Reduce all audio; 0 dB keeps the original level'**
+  String get audioGainAttenuationDesc;
+
+  /// No description provided for @audioGainPassthroughDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Unavailable while audio passthrough is on'**
+  String get audioGainPassthroughDesc;
 
   /// No description provided for @blockingSettings.
   ///
@@ -1905,7 +2073,7 @@ abstract class S {
   /// No description provided for @blockingSettingsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Manage blocked tags, voice actors, and circles'**
+  /// **'Blocked tags, voice actors, and circles'**
   String get blockingSettingsSubtitle;
 
   /// No description provided for @audioPassthrough.
@@ -1917,13 +2085,13 @@ abstract class S {
   /// No description provided for @audioPassthroughDescWindows.
   ///
   /// In en, this message translates to:
-  /// **'Enable WASAPI exclusive mode for lossless output (restart required)'**
+  /// **'Use WASAPI exclusive output (restart required)'**
   String get audioPassthroughDescWindows;
 
   /// No description provided for @audioPassthroughDescMac.
   ///
   /// In en, this message translates to:
-  /// **'Enable CoreAudio exclusive mode for lossless output'**
+  /// **'Use CoreAudio exclusive output'**
   String get audioPassthroughDescMac;
 
   /// No description provided for @audioPassthroughDisableDesc.
@@ -3207,31 +3375,31 @@ abstract class S {
   /// No description provided for @playerButtonSettingsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Customize player control button order'**
+  /// **'Player button order'**
   String get playerButtonSettingsSubtitle;
 
   /// No description provided for @playerLyricStyleSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Customize subtitle style for mini and fullscreen player'**
+  /// **'Mini and fullscreen lyric styles'**
   String get playerLyricStyleSubtitle;
 
   /// No description provided for @workDetailDisplaySubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Control info items on work detail page'**
+  /// **'Detail page content'**
   String get workDetailDisplaySubtitle;
 
   /// No description provided for @workCardDisplaySubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Control info items on work cards'**
+  /// **'Work card content'**
   String get workCardDisplaySubtitle;
 
   /// No description provided for @myTabsDisplaySubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Control tab display in My page'**
+  /// **'Tabs shown on My'**
   String get myTabsDisplaySubtitle;
 
   /// No description provided for @pageSizeSettings.
@@ -3243,7 +3411,7 @@ abstract class S {
   /// No description provided for @pageSizeCurrent.
   ///
   /// In en, this message translates to:
-  /// **'Current: {size} items/page'**
+  /// **'{size} items per page'**
   String pageSizeCurrent(int size);
 
   /// No description provided for @currentSettingLabel.
@@ -3273,31 +3441,31 @@ abstract class S {
   /// No description provided for @translationDescGoogle.
   ///
   /// In en, this message translates to:
-  /// **'Requires network access to Google services'**
+  /// **'Requires Google services'**
   String get translationDescGoogle;
 
   /// No description provided for @translationDescYoudao.
   ///
   /// In en, this message translates to:
-  /// **'Works with default network'**
+  /// **'Uses the current network'**
   String get translationDescYoudao;
 
   /// No description provided for @translationDescMicrosoft.
   ///
   /// In en, this message translates to:
-  /// **'Works with default network'**
+  /// **'Uses the current network'**
   String get translationDescMicrosoft;
 
   /// No description provided for @translationDescLlm.
   ///
   /// In en, this message translates to:
-  /// **'OpenAI-compatible API, requires manual API Key configuration'**
+  /// **'Requires an OpenAI-compatible API'**
   String get translationDescLlm;
 
   /// No description provided for @audioPassthroughDescAndroid.
   ///
   /// In en, this message translates to:
-  /// **'Allow raw bitstream output (AC3/DTS) to external decoder. May take exclusive audio control.'**
+  /// **'Send raw AC3/DTS audio to an external decoder'**
   String get audioPassthroughDescAndroid;
 
   /// No description provided for @permissionExplanation.
@@ -3588,6 +3756,18 @@ abstract class S {
   /// **'Comparing online and local files...'**
   String get supplementComparing;
 
+  /// No description provided for @supplementComparingProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'Comparing {count}/{total} works...'**
+  String supplementComparingProgress(Object count, Object total);
+
+  /// No description provided for @supplementCompareFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} work(s) failed to compare and were skipped'**
+  String supplementCompareFailed(Object count);
+
   /// No description provided for @supplementCheckFailed.
   ///
   /// In en, this message translates to:
@@ -3611,6 +3791,12 @@ abstract class S {
   /// In en, this message translates to:
   /// **'Supplement download failed: {error}'**
   String supplementDownloadFailed(Object error);
+
+  /// No description provided for @supplementTaskBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Supplement'**
+  String get supplementTaskBadge;
 
   /// No description provided for @playlistLink.
   ///
@@ -4005,7 +4191,7 @@ abstract class S {
   /// No description provided for @lyricTranslationConfirmMessage.
   ///
   /// In en, this message translates to:
-  /// **'KikoFlu will translate the currently playing lyrics with your current translation settings. When finished, the translation is shown immediately and saved as a same-name .lrc file in the Saved subtitle library folder, overwriting any existing file. Switching tracks during translation discards this result.'**
+  /// **'Translate the currently playing lyrics and show the result immediately. When automatic saving is enabled, the same-name .lrc file in the subtitle library will be overwritten. Switching tracks during translation discards the result.'**
   String get lyricTranslationConfirmMessage;
 
   /// No description provided for @unlock.
@@ -4032,41 +4218,11 @@ abstract class S {
   /// **'Floating Subtitle'**
   String get floatingSubtitle;
 
-  /// No description provided for @appendMode.
-  ///
-  /// In en, this message translates to:
-  /// **'Append Mode'**
-  String get appendMode;
-
-  /// No description provided for @appendModeStatusOn.
-  ///
-  /// In en, this message translates to:
-  /// **'Append Mode: On'**
-  String get appendModeStatusOn;
-
-  /// No description provided for @appendModeStatusOff.
-  ///
-  /// In en, this message translates to:
-  /// **'Append Mode: Off'**
-  String get appendModeStatusOff;
-
   /// No description provided for @playlistEmpty.
   ///
   /// In en, this message translates to:
   /// **'Playlist is empty'**
   String get playlistEmpty;
-
-  /// No description provided for @appendModeEnabled.
-  ///
-  /// In en, this message translates to:
-  /// **'Append Mode Enabled'**
-  String get appendModeEnabled;
-
-  /// No description provided for @appendModeHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Audio tapped next will be appended to the end of the current playlist instead of replacing it.\nDuplicate tracks won\'t be added.'**
-  String get appendModeHint;
 
   /// No description provided for @gotIt.
   ///
@@ -5106,6 +5262,12 @@ abstract class S {
   /// **'Restore Default Settings'**
   String get restoreDefaultSettings;
 
+  /// No description provided for @confirmRestoreDefaultSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Are you sure you want to restore the default settings?'**
+  String get confirmRestoreDefaultSettings;
+
   /// No description provided for @guideInPrefix.
   ///
   /// In en, this message translates to:
@@ -5471,6 +5633,12 @@ abstract class S {
   /// In en, this message translates to:
   /// **'Saved to subtitle library'**
   String get savedToSubtitleLibrary;
+
+  /// No description provided for @translatedLyricsNotSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Translation complete; shown only during current playback.'**
+  String get translatedLyricsNotSaved;
 
   /// No description provided for @saveToLocal.
   ///
@@ -6078,10 +6246,40 @@ abstract class S {
   /// **'API Endpoint URL'**
   String get apiEndpointUrl;
 
+  /// No description provided for @apiBaseUrl.
+  ///
+  /// In en, this message translates to:
+  /// **'API Base URL'**
+  String get apiBaseUrl;
+
+  /// No description provided for @apiProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'API Protocol'**
+  String get apiProtocol;
+
+  /// No description provided for @chatCompletionsProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Chat Completions (/chat/completions)'**
+  String get chatCompletionsProtocol;
+
+  /// No description provided for @responsesProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Responses (/responses)'**
+  String get responsesProtocol;
+
+  /// No description provided for @anthropicProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Anthropic Messages (/messages)'**
+  String get anthropicProtocol;
+
   /// No description provided for @openaiCompatibleEndpoint.
   ///
   /// In en, this message translates to:
-  /// **'OpenAI-compatible endpoint URL'**
+  /// **'The selected protocol suffix is added automatically'**
   String get openaiCompatibleEndpoint;
 
   /// No description provided for @pleaseEnterApiUrl.
@@ -6312,6 +6510,12 @@ abstract class S {
   /// **'Show subtitle tag on cover image'**
   String get showSubtitleTagOnCover;
 
+  /// No description provided for @showAgeRatingOnDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'Show age rating on work detail page'**
+  String get showAgeRatingOnDetail;
+
   /// No description provided for @recommendationsLabel.
   ///
   /// In en, this message translates to:
@@ -6395,6 +6599,12 @@ abstract class S {
   /// In en, this message translates to:
   /// **'Show subtitle tag on work card'**
   String get showSubtitleTagOnCard;
+
+  /// No description provided for @showAgeRatingOnCard.
+  ///
+  /// In en, this message translates to:
+  /// **'Show age rating on work card'**
+  String get showAgeRatingOnCard;
 
   /// No description provided for @showOnlineMarks.
   ///
@@ -6593,6 +6803,120 @@ abstract class S {
   /// In en, this message translates to:
   /// **'No logs yet'**
   String get logEmpty;
+
+  /// No description provided for @proxySettingsOptional.
+  ///
+  /// In en, this message translates to:
+  /// **'Proxy'**
+  String get proxySettingsOptional;
+
+  /// No description provided for @loginAdvancedSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Advanced settings'**
+  String get loginAdvancedSettings;
+
+  /// No description provided for @proxyEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enabled: {address}'**
+  String proxyEnabled(String address);
+
+  /// No description provided for @proxyAddressNotSet.
+  ///
+  /// In en, this message translates to:
+  /// **'Not set (direct connection)'**
+  String get proxyAddressNotSet;
+
+  /// No description provided for @proxyHttpDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect through an HTTP proxy'**
+  String get proxyHttpDescription;
+
+  /// No description provided for @useProxy.
+  ///
+  /// In en, this message translates to:
+  /// **'Use proxy'**
+  String get useProxy;
+
+  /// No description provided for @proxyAddress.
+  ///
+  /// In en, this message translates to:
+  /// **'Proxy address'**
+  String get proxyAddress;
+
+  /// No description provided for @proxyAddressFormat.
+  ///
+  /// In en, this message translates to:
+  /// **'Format: host:port, for example 127.0.0.1:7890'**
+  String get proxyAddressFormat;
+
+  /// No description provided for @applyProxyAddress.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply proxy address'**
+  String get applyProxyAddress;
+
+  /// No description provided for @invalidProxyAddress.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter a valid HTTP proxy address and port'**
+  String get invalidProxyAddress;
+
+  /// No description provided for @proxyModeDirect.
+  ///
+  /// In en, this message translates to:
+  /// **'Direct'**
+  String get proxyModeDirect;
+
+  /// No description provided for @proxyModeSystem.
+  ///
+  /// In en, this message translates to:
+  /// **'System proxy'**
+  String get proxyModeSystem;
+
+  /// No description provided for @proxyModeManual.
+  ///
+  /// In en, this message translates to:
+  /// **'Manual proxy'**
+  String get proxyModeManual;
+
+  /// No description provided for @proxyModeDirectDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect without a proxy'**
+  String get proxyModeDirectDescription;
+
+  /// No description provided for @proxyModeSystemDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Use the operating system proxy settings'**
+  String get proxyModeSystemDescription;
+
+  /// No description provided for @proxyModeManualDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Use the HTTP proxy configured below'**
+  String get proxyModeManualDescription;
+
+  /// No description provided for @playlistDisplayFormat.
+  ///
+  /// In en, this message translates to:
+  /// **'Playlist layout'**
+  String get playlistDisplayFormat;
+
+  /// No description provided for @playlistDisplayFormatMasonry.
+  ///
+  /// In en, this message translates to:
+  /// **'Masonry'**
+  String get playlistDisplayFormatMasonry;
+
+  /// No description provided for @playlistDisplayFormatList.
+  ///
+  /// In en, this message translates to:
+  /// **'List'**
+  String get playlistDisplayFormatList;
 }
 
 class _SDelegate extends LocalizationsDelegate<S> {
@@ -6637,8 +6961,9 @@ S lookupS(Locale locale) {
   }
 
   throw FlutterError(
-      'S.delegate failed to load unsupported locale "$locale". This is likely '
-      'an issue with the localizations generation tool. Please file an issue '
-      'on GitHub with a reproducible sample app and the gen-l10n configuration '
-      'that was used.');
+    'S.delegate failed to load unsupported locale "$locale". This is likely '
+    'an issue with the localizations generation tool. Please file an issue '
+    'on GitHub with a reproducible sample app and the gen-l10n configuration '
+    'that was used.',
+  );
 }

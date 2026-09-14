@@ -10,6 +10,98 @@ import '../utils/snackbar_util.dart';
 import '../../l10n/app_localizations.dart';
 import 'responsive_dialog.dart';
 
+/// 为覆盖播放列表里全部 [totalCount] 个作品，第 1 页之后仍需抓取的页码列表。
+///
+/// [effectivePageSize] 传**服务端第 1 页实际返回的条数**（可能小于请求值），
+/// [maxPages] 为页数安全上限（防御作品数异常巨大的播放列表）。
+/// 返回空列表表示第 1 页已经覆盖全部作品。
+///
+/// 抽成纯函数是为了让"页数覆盖"这个曾经的 bug 点可被回归测试锁住。
+@visibleForTesting
+List<int> playlistPagesToScan({
+  required int totalCount,
+  required int effectivePageSize,
+  required int maxPages,
+}) {
+  if (effectivePageSize <= 0) return const [];
+  if (totalCount <= effectivePageSize) return const [];
+
+  var totalPages = (totalCount + effectivePageSize - 1) ~/ effectivePageSize;
+  if (totalPages > maxPages) totalPages = maxPages;
+  return [for (var page = 2; page <= totalPages; page++) page];
+}
+
+/// 会话级缓存：同一登录会话内反复打开弹窗时，播放列表清单与
+/// 成员检查结果直接复用，避免每次打开都全量重拉（播放列表最多
+/// 5 页、成员检查每列表还要翻页，是最耗时的两步）。
+///
+/// 失效策略：TTL 过期、登录 host 变化、增/删成功后增量同步
+/// （只改对应 (workId, playlistId) 的成员标记，不整体丢弃）。
+class _PlaylistDialogCache {
+  _PlaylistDialogCache._();
+  static final _PlaylistDialogCache instance = _PlaylistDialogCache._();
+
+  static const Duration _ttl = Duration(minutes: 5);
+
+  String? _host;
+  List<Playlist>? _playlists;
+  DateTime? _playlistsAt;
+
+  /// workId -> (playlistId -> 是否包含该作品)
+  final Map<int, Map<String, bool>> _membership = {};
+  final Map<int, DateTime> _membershipAt = {};
+
+  List<Playlist>? playlistsFor(String host) {
+    if (_host != host) return null;
+    final list = _playlists;
+    final at = _playlistsAt;
+    if (list == null || at == null) return null;
+    if (DateTime.now().difference(at) > _ttl) return null;
+    return List.of(list);
+  }
+
+  void storePlaylists(String host, List<Playlist> playlists) {
+    if (_host != host) {
+      _host = host;
+      _membership.clear();
+      _membershipAt.clear();
+    }
+    _playlists = List.of(playlists);
+    _playlistsAt = DateTime.now();
+  }
+
+  Map<String, bool>? membershipFor(String host, int workId) {
+    if (_host != host) return null;
+    final at = _membershipAt[workId];
+    if (at == null) return null;
+    if (DateTime.now().difference(at) > _ttl) {
+      _membership.remove(workId);
+      _membershipAt.remove(workId);
+      return null;
+    }
+    final result = _membership[workId];
+    return result == null ? null : Map.of(result);
+  }
+
+  void storeMembership(String host, int workId, Map<String, bool> result) {
+    if (_host != host) return;
+    _membership[workId] = Map.of(result);
+    _membershipAt[workId] = DateTime.now();
+  }
+
+  /// 增/删成功后增量同步对应成员标记
+  void updateMembership(
+    String host,
+    int workId,
+    String playlistId,
+    bool inPlaylist,
+  ) {
+    if (_host != host) return;
+    _membership.putIfAbsent(workId, () => {})[playlistId] = inPlaylist;
+    _membershipAt[workId] = DateTime.now();
+  }
+}
+
 /// 添加作品到播放列表的对话框
 class AddToPlaylistDialog extends ConsumerStatefulWidget {
   final int workId;
@@ -26,26 +118,13 @@ class AddToPlaylistDialog extends ConsumerStatefulWidget {
     required int workId,
     required String workTitle,
   }) {
-    final isLandscape =
-        MediaQuery.of(context).orientation == Orientation.landscape;
-
-    if (isLandscape) {
-      return showDialog<bool>(
-        context: context,
-        builder: (context) => AddToPlaylistDialog(
-          workId: workId,
-          workTitle: workTitle,
-        ),
-      );
-    } else {
-      return showResponsiveBottomSheet<bool>(
-        context: context,
-        builder: (context) => AddToPlaylistDialog(
-          workId: workId,
-          workTitle: workTitle,
-        ),
-      );
-    }
+    return showResponsiveBottomSheet<bool>(
+      context: context,
+      builder: (context) => AddToPlaylistDialog(
+        workId: workId,
+        workTitle: workTitle,
+      ),
+    );
   }
 
   @override
@@ -56,10 +135,21 @@ class AddToPlaylistDialog extends ConsumerStatefulWidget {
 class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
   static final _log = LogService.instance;
 
+  /// API 单页最大数量
+  static const int _pageSize = 96;
+
+  /// 检查成员关系时的安全页数上限（20 * 96 = 1920 个作品）
+  static const int _maxPages = 20;
+
+  /// 单个播放列表同时抓取的页数
+  static const int _pageConcurrency = 6;
+
   bool _isAdding = false;
   bool _isLoadingPlaylists = true;
-  bool _isCheckingMembership = false;
   String? _loadError;
+
+  /// 仍在检查成员关系的播放列表 id（逐条消失，不再整表一起转圈）
+  final Set<String> _checking = {};
 
   /// 本地加载的全部播放列表（不依赖分页 provider）
   List<Playlist> _allPlaylists = [];
@@ -74,7 +164,22 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
   }
 
   /// 加载全部播放列表（遍历所有分页）
+  ///
+  /// 命中会话级缓存时直接复用，不再请求网络。
   Future<void> _loadAllPlaylists() async {
+    final host = ref.read(authProvider).host ?? '';
+    final cached = _PlaylistDialogCache.instance.playlistsFor(host);
+    if (cached != null) {
+      if (!mounted) return;
+      setState(() {
+        _allPlaylists = cached;
+        _isLoadingPlaylists = false;
+        _loadError = null;
+      });
+      _checkWorkMembership();
+      return;
+    }
+
     setState(() {
       _isLoadingPlaylists = true;
       _loadError = null;
@@ -84,13 +189,12 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
       final apiService = ref.read(kikoeruApiServiceProvider);
       final allPlaylists = <Playlist>[];
       int page = 1;
-      const pageSize = 96; // API 最大数量
-      const maxPages = 5;
+      const maxPages = 5; // 播放列表本身的页数上限（每页 _pageSize 个）
 
       while (page <= maxPages) {
         final result = await apiService.getUserPlaylists(
           page: page,
-          pageSize: pageSize,
+          pageSize: _pageSize,
           filterBy: 'all',
         );
 
@@ -100,11 +204,19 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
             .toList();
         allPlaylists.addAll(playlists);
 
-        if (playlists.length < pageSize) break;
+        if (playlists.isEmpty) break;
+        // 优先用服务端给的总数判断是否取完（服务端可能截断 pageSize）
+        final total = _totalCountOf(result);
+        if (total != null) {
+          if (allPlaylists.length >= total) break;
+        } else if (playlists.length < _pageSize) {
+          break;
+        }
         page++;
       }
 
       if (mounted) {
+        _PlaylistDialogCache.instance.storePlaylists(host, allPlaylists);
         setState(() {
           _allPlaylists = allPlaylists;
           _isLoadingPlaylists = false;
@@ -121,67 +233,128 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
     }
   }
 
-  /// 检查作品在哪些播放列表中（遍历所有页以保证准确性）
+  /// 从分页信息里取作品总数（服务端字段缺失时返回 null）
+  int? _totalCountOf(Map<String, dynamic> response) {
+    final pagination = response['pagination'];
+    if (pagination is Map && pagination['totalCount'] is int) {
+      return pagination['totalCount'] as int;
+    }
+    return null;
+  }
+
+  /// 检查作品在哪些播放列表中
+  ///
+  /// 逐条完成、逐条回填：每个播放列表查完就更新自己的那一行，
+  /// 不再让每一行都挂着转圈直到整套检查结束。
   Future<void> _checkWorkMembership() async {
     if (_allPlaylists.isEmpty) return;
 
-    setState(() => _isCheckingMembership = true);
-
-    try {
-      final apiService = ref.read(kikoeruApiServiceProvider);
-
-      // 并行检查所有播放列表
-      final results = await Future.wait(
-        _allPlaylists.map((playlist) async {
-          try {
-            return MapEntry(
-              playlist.id,
-              await _isWorkInPlaylist(apiService, playlist),
-            );
-          } catch (e) {
-            _log.debug('检查播放列表成员失败: ${playlist.displayName}, $e',
-                tag: 'Playlist');
-            return MapEntry(playlist.id, false);
-          }
-        }),
-      );
-
-      if (mounted) {
-        setState(() {
-          _inPlaylists.clear();
-          for (final entry in results) {
-            if (entry.value) {
-              _inPlaylists.add(entry.key);
-            }
-          }
-          _isCheckingMembership = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isCheckingMembership = false);
-      }
+    // 命中会话级缓存：直接回填，不再逐列表翻页检查
+    final host = ref.read(authProvider).host ?? '';
+    final cached =
+        _PlaylistDialogCache.instance.membershipFor(host, widget.workId);
+    if (cached != null) {
+      if (!mounted) return;
+      setState(() {
+        _checking.clear();
+        _inPlaylists
+          ..clear()
+          ..addAll(
+              cached.entries.where((e) => e.value).map((e) => e.key));
+      });
+      return;
     }
+
+    setState(() {
+      _inPlaylists.clear();
+      _checking
+        ..clear()
+        ..addAll(_allPlaylists.map((playlist) => playlist.id));
+    });
+
+    final results = <String, bool>{};
+    await Future.wait(_allPlaylists.map((playlist) async {
+      bool found = false;
+      try {
+        found = await _isWorkInPlaylist(playlist);
+      } catch (e) {
+        _log.debug('检查播放列表成员失败: ${playlist.displayName}, $e',
+            tag: 'Playlist');
+      }
+      results[playlist.id] = found;
+      if (!mounted) return;
+      setState(() {
+        _checking.remove(playlist.id);
+        if (found) {
+          _inPlaylists.add(playlist.id);
+        }
+      });
+    }));
+    _PlaylistDialogCache.instance.storeMembership(host, widget.workId, results);
   }
 
-  /// 遍历播放列表所有页检查作品是否存在
-  Future<bool> _isWorkInPlaylist(dynamic apiService, Playlist playlist) async {
-    int page = 1;
-    const pageSize = 96; // API 最大数量
-    const maxPages = 5;
+  /// 检查作品是否已在指定播放列表中
+  ///
+  /// 旧实现逐页 `await`，几百个作品的播放列表要串行跑完 5 个来回，
+  /// 而且被 maxPages 截断后还会漏检尾部的作品（误显示为"未收藏"）。
+  /// 现在：先取第 1 页拿分页信息 `totalCount`，再把剩余页按
+  /// [_pageConcurrency] 并发取回，既把 N 个串行来回压成一批，
+  /// 也能覆盖播放列表的全部作品。
+  Future<bool> _isWorkInPlaylist(Playlist playlist) async {
+    final apiService = ref.read(kikoeruApiServiceProvider);
 
-    while (page <= maxPages) {
-      final response = await apiService.getPlaylistWorks(
-        playlistId: playlist.id,
-        page: page,
-        pageSize: pageSize,
-      );
+    final firstResponse = await apiService.getPlaylistWorks(
+      playlistId: playlist.id,
+      page: 1,
+      pageSize: _pageSize,
+    );
+    final firstWorks = (firstResponse['works'] as List?) ?? const [];
+    if (firstWorks.any((work) => work['id'] == widget.workId)) return true;
+    if (firstWorks.isEmpty) return false;
 
-      final works = response['works'] as List;
-      if (works.any((work) => work['id'] == widget.workId)) return true;
+    // 以服务端实际生效的页长为准（可能小于请求值）
+    final effectivePageSize = firstWorks.length;
+    final totalCount = _totalCountOf(firstResponse) ?? playlist.worksCount;
+    if (totalCount <= effectivePageSize) return false; // 一页就取完了
 
-      if (works.length < pageSize) return false;
-      page++;
+    final pagesToScan = playlistPagesToScan(
+      totalCount: totalCount,
+      effectivePageSize: effectivePageSize,
+      maxPages: _maxPages,
+    );
+    if (pagesToScan.isNotEmpty && pagesToScan.last >= _maxPages) {
+      _log.debug(
+          '播放列表 ${playlist.displayName} 作品过多，仅检查前 ${_maxPages * effectivePageSize} 个',
+          tag: 'Playlist');
+    }
+
+    for (var offset = 0;
+        offset < pagesToScan.length;
+        offset += _pageConcurrency) {
+      final end = offset + _pageConcurrency <= pagesToScan.length
+          ? offset + _pageConcurrency
+          : pagesToScan.length;
+      final pages = pagesToScan.sublist(offset, end);
+
+      final responses = await Future.wait(pages.map((page) async {
+        try {
+          return await apiService.getPlaylistWorks(
+            playlistId: playlist.id,
+            page: page,
+            pageSize: effectivePageSize,
+          );
+        } catch (e) {
+          _log.debug(
+              '检查播放列表成员失败: ${playlist.displayName} 第 $page 页, $e',
+              tag: 'Playlist');
+          return const <String, dynamic>{};
+        }
+      }));
+
+      for (final response in responses) {
+        final works = (response['works'] as List?) ?? const [];
+        if (works.any((work) => work['id'] == widget.workId)) return true;
+      }
     }
     return false;
   }
@@ -204,6 +377,14 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
 
         // 刷新播放列表列表（更新作品数量等信息）
         ref.read(playlistsProvider.notifier).refresh();
+
+        // 同步会话级缓存，避免下次打开仍显示"未收藏"
+        _PlaylistDialogCache.instance.updateMembership(
+          ref.read(authProvider).host ?? '',
+          widget.workId,
+          playlist.id,
+          true,
+        );
 
         // 更新本地状态
         setState(() {
@@ -247,6 +428,14 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
         // 刷新播放列表列表
         ref.read(playlistsProvider.notifier).refresh();
 
+        // 同步会话级缓存，避免下次打开仍显示"已收藏"
+        _PlaylistDialogCache.instance.updateMembership(
+          ref.read(authProvider).host ?? '',
+          widget.workId,
+          playlist.id,
+          false,
+        );
+
         // 更新本地状态
         setState(() {
           _inPlaylists.remove(playlist.id);
@@ -277,58 +466,21 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
     Widget content = Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // 标题栏
-        Padding(
-          padding: EdgeInsets.fromLTRB(
-            isLandscape ? 24 : 16,
-            isLandscape ? 20 : 16,
-            isLandscape ? 16 : 8,
-            isLandscape ? 16 : 8,
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      S.of(context).addToPlaylist,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      widget.workTitle,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withValues(alpha: 0.6),
-                          ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
+        BottomSheetHeader(
+          title: S.of(context).addToPlaylist,
+          subtitle: widget.workTitle,
+          showCloseButton: isLandscape,
+          trailing: [
+            if (_isAdding)
+              const Padding(
+                padding: EdgeInsets.only(right: 8),
+                child: SizedBox(
+                  height: 20,
+                  width: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               ),
-              if (_isAdding)
-                const Padding(
-                  padding: EdgeInsets.only(right: 8),
-                  child: SizedBox(
-                    height: 20,
-                    width: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              if (isLandscape)
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.of(context).pop(),
-                  tooltip: S.of(context).close,
-                ),
-            ],
-          ),
+          ],
         ),
         const Divider(height: 1),
         // 播放列表
@@ -458,7 +610,7 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
                       ],
                     ],
                   ),
-                  trailing: _isCheckingMembership
+                  trailing: _checking.contains(playlist.id)
                       ? const SizedBox(
                           width: 20,
                           height: 20,
@@ -512,24 +664,12 @@ class _AddToPlaylistDialogState extends ConsumerState<AddToPlaylistDialog> {
       ],
     );
 
-    if (isLandscape) {
-      return Dialog(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.5,
-            maxHeight: MediaQuery.of(context).size.height * 0.7,
-          ),
-          child: content,
-        ),
-      );
-    } else {
-      return Container(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.of(context).size.height * 0.7,
-        ),
-        child: content,
-      );
-    }
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.7,
+      ),
+      child: content,
+    );
   }
 }

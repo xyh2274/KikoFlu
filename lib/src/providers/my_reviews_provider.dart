@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:equatable/equatable.dart';
 
@@ -9,6 +11,8 @@ import 'auth_provider.dart';
 import 'settings_provider.dart';
 import 'subtitle_library_provider.dart';
 import '../utils/subtitle_filter.dart';
+import '../utils/paged_collection.dart';
+import '../utils/persistent_enum_preference.dart';
 
 /// 用户 Review/收藏状态的过滤枚举
 enum MyReviewFilter {
@@ -35,7 +39,10 @@ class MyReviewsState extends Equatable {
   final List<Work> works;
   final List<Work> rawWorks;
   final bool isLoading;
+  final bool isRefreshing;
+  final bool isLoadingMore;
   final String? error;
+  final String? loadMoreError;
   final int currentPage;
   final int totalCount;
   final bool hasMore;
@@ -55,7 +62,10 @@ class MyReviewsState extends Equatable {
     this.works = const [],
     this.rawWorks = const [],
     this.isLoading = false,
+    this.isRefreshing = false,
+    this.isLoadingMore = false,
     this.error,
+    this.loadMoreError,
     this.currentPage = 1,
     this.totalCount = 0,
     this.hasMore = true,
@@ -71,7 +81,10 @@ class MyReviewsState extends Equatable {
     List<Work>? works,
     List<Work>? rawWorks,
     bool? isLoading,
+    bool? isRefreshing,
+    bool? isLoadingMore,
     String? error,
+    String? loadMoreError,
     int? currentPage,
     int? totalCount,
     bool? hasMore,
@@ -86,7 +99,10 @@ class MyReviewsState extends Equatable {
       works: works ?? this.works,
       rawWorks: rawWorks ?? this.rawWorks,
       isLoading: isLoading ?? this.isLoading,
+      isRefreshing: isRefreshing ?? this.isRefreshing,
+      isLoadingMore: isLoadingMore ?? this.isLoadingMore,
       error: error,
+      loadMoreError: loadMoreError,
       currentPage: currentPage ?? this.currentPage,
       totalCount: totalCount ?? this.totalCount,
       hasMore: hasMore ?? this.hasMore,
@@ -104,7 +120,10 @@ class MyReviewsState extends Equatable {
         works,
         rawWorks,
         isLoading,
+        isRefreshing,
+        isLoadingMore,
         error,
+        loadMoreError,
         currentPage,
         totalCount,
         hasMore,
@@ -118,22 +137,84 @@ class MyReviewsState extends Equatable {
 }
 
 class MyReviewsNotifier extends StateNotifier<MyReviewsState> {
+  static const String layoutPreferenceKey = 'my_reviews_layout_type';
+  static const String filterPreferenceKey = 'my_reviews_filter';
+
   final KikoeruApiService _apiService;
   final Ref _ref;
+  final PagedRequestGate _requestGate = PagedRequestGate();
+  final _layoutPreference = PersistentEnumPreference<MyReviewLayoutType>(
+    key: layoutPreferenceKey,
+    values: MyReviewLayoutType.values,
+    fallback: MyReviewLayoutType.bigGrid,
+  );
+  final _filterPreference = PersistentEnumPreference<MyReviewFilter>(
+    key: filterPreferenceKey,
+    values: MyReviewFilter.values,
+    fallback: MyReviewFilter.all,
+  );
+  late final Future<void> preferencesReady;
+
   MyReviewsNotifier(this._apiService, this._ref, {int initialPageSize = 20})
-      : super(MyReviewsState(pageSize: initialPageSize));
+      : super(MyReviewsState(pageSize: initialPageSize)) {
+    preferencesReady = _loadPreferences();
+  }
+
+  Future<void> _loadPreferences() async {
+    await Future.wait([
+      _loadLayoutPreference(),
+      _loadFilterPreference(),
+    ]);
+  }
+
+  Future<void> _loadLayoutPreference() async {
+    final layoutType = await _layoutPreference.load();
+    if (!mounted || layoutType == null) return;
+
+    state = state.copyWith(
+      layoutType: layoutType,
+      error: state.error,
+      loadMoreError: state.loadMoreError,
+    );
+  }
+
+  Future<void> _loadFilterPreference() async {
+    final filter = await _filterPreference.load();
+    if (!mounted || filter == null) return;
+
+    state = state.copyWith(
+      filter: filter,
+      error: state.error,
+      loadMoreError: state.loadMoreError,
+    );
+  }
 
   void updatePageSize(int newSize) {
     if (state.pageSize == newSize) return;
     state = state.copyWith(pageSize: newSize);
-    load(targetPage: 1);
+    load(targetPage: 1, supersede: true);
   }
 
-  Future<void> load({bool refresh = false, int? targetPage}) async {
-    if (state.isLoading) return;
+  Future<void> load({
+    bool refresh = false,
+    int? targetPage,
+    bool append = false,
+    bool supersede = false,
+  }) async {
+    await preferencesReady;
+    if (!mounted) return;
+
+    final requestToken = _requestGate.begin(supersede: supersede);
+    if (requestToken == null) return;
     final page = targetPage ?? state.currentPage;
 
-    state = state.copyWith(isLoading: true, error: null, currentPage: page);
+    state = state.copyWith(
+      isLoading: true,
+      isRefreshing: !append,
+      isLoadingMore: append,
+      error: null,
+      loadMoreError: null,
+    );
 
     try {
       final result = await _apiService.getMyReviews(
@@ -165,6 +246,15 @@ class MyReviewsNotifier extends StateNotifier<MyReviewsState> {
         throw Exception('Unexpected review item format');
       }).toList();
 
+      if (!_requestGate.isCurrent(requestToken)) return;
+
+      final rawWorks = mergePagedItems<Work, int>(
+        existing: const [],
+        incoming: works,
+        idOf: (work) => work.id,
+        replace: true,
+      );
+
       // 获取分页信息
       final pagination = result['pagination'] as Map<String, dynamic>?;
       final totalCount = pagination?['totalCount'] ?? 0;
@@ -175,15 +265,29 @@ class MyReviewsNotifier extends StateNotifier<MyReviewsState> {
       final hasMore = page < totalPages;
 
       state = state.copyWith(
-        works: _filterWorks(works),
-        rawWorks: works,
+        works: _filterWorks(rawWorks),
+        rawWorks: rawWorks,
         totalCount: totalCount,
         hasMore: hasMore,
         isLoading: false,
+        isRefreshing: false,
+        isLoadingMore: false,
         currentPage: page,
+        error: null,
+        loadMoreError: null,
       );
     } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
+      if (!_requestGate.isCurrent(requestToken)) return;
+      final message = e.toString();
+      state = state.copyWith(
+        isLoading: false,
+        isRefreshing: false,
+        isLoadingMore: false,
+        error: append ? null : message,
+        loadMoreError: append ? message : null,
+      );
+    } finally {
+      _requestGate.complete(requestToken);
     }
   }
 
@@ -203,15 +307,26 @@ class MyReviewsNotifier extends StateNotifier<MyReviewsState> {
 
   // 下一页
   Future<void> nextPage() async {
-    if (state.hasMore) {
-      final nextPage = state.currentPage + 1;
-      await load(targetPage: nextPage);
-    }
+    if (state.isLoading || !state.hasMore) return;
+    await load(targetPage: state.currentPage + 1);
+  }
+
+  Future<void> loadMore() async {
+    if (state.isLoading || !state.hasMore) return;
+    await load(
+      targetPage: state.currentPage + 1,
+    );
   }
 
   void changeFilter(MyReviewFilter filter) {
-    state = state.copyWith(filter: filter, currentPage: 1, totalCount: 0);
-    load(targetPage: 1);
+    if (state.filter == filter) return;
+    state = state.copyWith(
+      filter: filter,
+      currentPage: 1,
+      totalCount: 0,
+    );
+    unawaited(_filterPreference.save(filter));
+    load(targetPage: 1, supersede: true);
   }
 
   bool get isSubtitleFilterActive =>
@@ -238,7 +353,7 @@ class MyReviewsNotifier extends StateNotifier<MyReviewsState> {
       currentPage: newPage,
       totalCount: 0,
     );
-    load(targetPage: newPage);
+    load(targetPage: newPage, supersede: true);
   }
 
   void changeSort(SortOrder sortType, SortDirection sortOrder) {
@@ -249,7 +364,7 @@ class MyReviewsNotifier extends StateNotifier<MyReviewsState> {
       currentPage: 1,
       totalCount: 0,
     );
-    load(targetPage: 1);
+    load(targetPage: 1, supersede: true);
   }
 
   // 切换布局类型
@@ -260,9 +375,13 @@ class MyReviewsNotifier extends StateNotifier<MyReviewsState> {
       MyReviewLayoutType.list => MyReviewLayoutType.bigGrid,
     };
     state = state.copyWith(layoutType: nextLayout);
+    unawaited(_layoutPreference.save(nextLayout));
   }
 
-  void refresh() => load();
+  Future<void> refresh() => load(
+        targetPage: state.currentPage,
+        supersede: true,
+      );
 
   void reapplyFilters() {
     state = state.copyWith(works: _filterWorks(state.rawWorks));

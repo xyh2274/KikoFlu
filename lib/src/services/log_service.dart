@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
@@ -47,6 +48,23 @@ class LogService {
 
   LogService._();
 
+  /// Android 原生日志通道。release 模式下 Flutter engine 不转发
+  /// Dart stdout/stderr 到 logcat，必须经 MethodChannel 调用
+  /// android.util.Log 才能用 adb logcat 查看应用日志。
+  static const MethodChannel _logChannel = MethodChannel(
+    'com.meteor.kikoeruflutter/app_logs',
+  );
+
+  static const String _logcatTag = 'Kikoeru';
+
+  /// LogLevel -> android.util.Log 常量（DEBUG=3 INFO=4 WARN=5 ERROR=6）
+  static int _androidLogLevel(LogLevel level) => switch (level) {
+        LogLevel.debug => 3,
+        LogLevel.info => 4,
+        LogLevel.warning => 5,
+        LogLevel.error => 6,
+      };
+
   final List<LogEntry> _logs = [];
   static const int _maxLogs = 5000;
   static const int _maxMessageLength = 500;
@@ -79,6 +97,21 @@ class LogService {
       _logs.removeRange(0, _logs.length - _maxLogs);
     }
     _controller.add(truncated);
+    // 输出到平台控制台，便于 adb logcat / 桌面终端排查：
+    // - Android：经 MethodChannel 调用 android.util.Log（tag: Kikoeru）。
+    //   release 模式下 engine 不转发 Dart stderr，必须走原生日志。
+    // - 其他平台：写 stderr（不会经过 print，避免被拦截器循环捕获）。
+    if (Platform.isAndroid) {
+      _logChannel
+          .invokeMethod('writeLog', {
+            'level': _androidLogLevel(truncated.level),
+            'tag': _logcatTag,
+            'message': truncated.format(),
+          })
+          .catchError((_) {});
+    } else {
+      stderr.writeln('Kikoeru ${truncated.format()}');
+    }
   }
 
   void debug(String message, {String? tag}) {

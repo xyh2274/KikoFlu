@@ -1,7 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
 import 'dart:io';
@@ -15,22 +15,32 @@ import '../services/log_service.dart';
 import '../services/storage_service.dart';
 import '../utils/string_utils.dart';
 import '../utils/snackbar_util.dart';
+import '../utils/scroll_optimization.dart';
 import '../providers/auth_provider.dart';
 import '../providers/work_card_display_provider.dart';
 import '../utils/responsive_grid_helper.dart';
 import '../widgets/enhanced_work_card.dart';
-import '../widgets/pagination_bar.dart';
 import '../widgets/sort_dialog.dart';
 import 'offline_work_detail_screen.dart';
-import '../widgets/overscroll_next_page_detector.dart';
 import '../widgets/privacy_blur_cover.dart';
-import '../utils/scroll_optimization.dart';
+import '../widgets/virtualized_sliver_collection.dart';
+import '../widgets/floating_feed_toolbar.dart';
+import '../widgets/confirmation_dialog.dart';
 
 final _log = LogService.instance;
 
 /// 本地下载屏幕 - 显示已完成的下载内容
 class LocalDownloadsScreen extends ConsumerStatefulWidget {
-  const LocalDownloadsScreen({super.key});
+  const LocalDownloadsScreen({
+    super.key,
+    this.toolbarTop = 8,
+    this.collapsedToolbarTop,
+    this.primaryToolbarVisible,
+  });
+
+  final double toolbarTop;
+  final double? collapsedToolbarTop;
+  final ValueListenable<bool>? primaryToolbarVisible;
 
   @override
   ConsumerState<LocalDownloadsScreen> createState() =>
@@ -41,9 +51,10 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     with AutomaticKeepAliveClientMixin {
   bool _isSelectionMode = false;
   final Set<int> _selectedWorkIds = {}; // 选中的作品ID
-  final ScrollController _scrollController = ScrollController();
+  final VirtualizedCollectionController _collectionController =
+      VirtualizedCollectionController();
   int _currentPage = 1;
-  final int _pageSize = 30;
+  static const int _pageSize = 30;
 
   // 磁盘上存在的作品目录元数据（即使已无任何下载任务，如文件被全部误删）
   Map<int, Map<String, dynamic>> _diskWorks = {};
@@ -112,38 +123,28 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
 
   @override
   void dispose() {
-    _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
   void _scrollToTop() {
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        0,
-        duration: const Duration(milliseconds: 500),
-        curve: Curves.easeInOut,
-      );
-    }
+    _collectionController.scrollToTop(
+      duration: const Duration(milliseconds: 500),
+      curve: Curves.easeInOut,
+    );
   }
 
   void _goToPage(int page) {
-    setState(() {
-      _currentPage = page;
-    });
+    setState(() => _currentPage = page);
     _scrollToTop();
   }
 
   void _nextPage(int totalPages) {
-    if (_currentPage < totalPages) {
-      _goToPage(_currentPage + 1);
-    }
+    if (_currentPage < totalPages) _goToPage(_currentPage + 1);
   }
 
   void _previousPage() {
-    if (_currentPage > 1) {
-      _goToPage(_currentPage - 1);
-    }
+    if (_currentPage > 1) _goToPage(_currentPage - 1);
   }
 
   void _toggleSelectionMode() {
@@ -318,25 +319,12 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     if (_selectedWorkIds.isEmpty) return;
 
     final l10n = S.of(context);
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(l10n.deletionConfirmTitle),
-        content: Text(l10n.deleteSelectedWorksConfirm(_selectedWorkIds.length)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(l10n.cancel),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(
-              foregroundColor: Theme.of(context).colorScheme.error,
-            ),
-            child: Text(l10n.delete),
-          ),
-        ],
-      ),
+      title: l10n.deletionConfirmTitle,
+      content: Text(l10n.deleteSelectedWorksConfirm(_selectedWorkIds.length)),
+      confirmLabel: l10n.delete,
+      variant: ConfirmationDialogVariant.danger,
     );
 
     if (confirmed != true) return;
@@ -413,7 +401,6 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
   void _showSortDialog() {
     showDialog(
       context: context,
-      barrierDismissible: !Platform.isIOS,
       builder: (context) => CommonSortDialog(
         title: S.of(context).sortOptions,
         currentOption: _sortOrder,
@@ -456,7 +443,7 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       groupedTasks.entries.where((entry) {
         final workId = entry.key;
         final tasks = entry.value;
-        final rjCode = 'RJ${workId.toString().padLeft(6, '0')}';
+        final rjCode = formatRJCode(workId);
 
         // 无任务记录的作品（仅磁盘目录），用 RJ 号匹配
         if (tasks.isEmpty) {
@@ -594,6 +581,14 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     return _diskWorks[workId];
   }
 
+  /// 作品封面地址：复用 [Work.getCoverImageUrl] 的 URL 规则，
+  /// 但只用一个带 id 的空 Work（不走 fromJson + 深层清洗，
+  /// 避免为几百个作品构造封面地址时做无谓的元数据解析）。
+  String? _coverUrlForWorkId(int workId, String host, String token) {
+    if (host.isEmpty) return null;
+    return Work(id: workId, title: '').getCoverImageUrl(host, token: token);
+  }
+
   // 顶部"补充下载"：先多选要对比的音声（支持全选），再对比所选并补充下载
   Future<void> _pickWorksForSupplement(
       Map<int, List<DownloadTask>> groupedTasks) async {
@@ -611,16 +606,18 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       return;
     }
 
-    final entries = [
-      for (final workId in workIds)
-        _WorkPickEntry(
-          workId: workId,
-          workTitle: (() {
-            final meta = _metadataForWork(workId, groupedTasks);
-            return (meta?['title'] as String?) ?? 'RJ$workId';
-          })(),
-        ),
-    ];
+    final host = authState.host ?? '';
+    final token = authState.token ?? '';
+    final entries = <_WorkPickEntry>[];
+    for (final workId in workIds) {
+      final metadata = _metadataForWork(workId, groupedTasks);
+      entries.add(_WorkPickEntry(
+        workId: workId,
+        workTitle: (metadata?['title'] as String?) ?? 'RJ$workId',
+        metadata: metadata,
+        coverUrl: _coverUrlForWorkId(workId, host, token),
+      ));
+    }
 
     final selected = await showDialog<List<int>>(
       context: context,
@@ -633,6 +630,9 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     }
     await _supplementDownloadSelected(groupedTasks, selected);
   }
+
+  /// 补充下载对比的并发批大小（与「添加到播放列表」的并发口径一致）
+  static const int _supplementCompareConcurrency = 6;
 
   // 多音声差异对比：对比所选音声的在线/本地文件，树形展示并补充下载
   Future<void> _supplementDownloadSelected(
@@ -647,27 +647,55 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       return;
     }
 
-    // 显示对比进度对话框
+    // 显示对比进度对话框：显示 x/y 进度且可取消（全量对比可能要几十秒）
     var dialogOpen = false;
+    var cancelled = false;
+    var comparedCount = 0;
+    StateSetter? dialogSetState;
     if (mounted) {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => PopScope(
+        builder: (dialogContext) => PopScope(
           canPop: false,
-          child: AlertDialog(
-            content: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2.5),
+          child: StatefulBuilder(
+            builder: (context, setDialogState) {
+              dialogSetState = setDialogState;
+              return AlertDialog(
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2.5),
+                        ),
+                        const SizedBox(width: 16),
+                        Flexible(
+                          child: Text(
+                            comparedCount == 0
+                                ? l10n.supplementComparing
+                                : l10n.supplementComparingProgress(
+                                    comparedCount, workIds.length),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: () {
+                        cancelled = true;
+                        Navigator.of(dialogContext).pop();
+                      },
+                      child: Text(l10n.cancel),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 16),
-                Flexible(child: Text(l10n.supplementComparing)),
-              ],
-            ),
+              );
+            },
           ),
         ),
       );
@@ -675,20 +703,45 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     }
 
     try {
-      // 逐个作品对比，汇总有缺失的作品
+      // 并发批对比：147 个作品串行要 3 分钟以上，改成每批 6 个并发后
+      // 耗时压缩到十几秒量级；每批结束刷新进度并检查取消标志
       final entries = <_WorkSupplementEntry>[];
-      for (final workId in workIds) {
-        final result = await DownloadService.instance
-            .checkSupplementDiff(workId);
-        if (result.error != null || result.missing.isEmpty) continue;
-        final metadata = _metadataForWork(workId, groupedTasks);
-        entries.add(_WorkSupplementEntry(
-          workId: workId,
-          workTitle: (metadata?['title'] as String?) ?? 'RJ$workId',
-          tree: result.tree,
-          missingCount: result.missing.length,
-        ));
+      final failedWorkIds = <int>[];
+      for (var i = 0;
+          i < workIds.length && !cancelled;
+          i += _supplementCompareConcurrency) {
+        final batchEnd =
+            (i + _supplementCompareConcurrency).clamp(0, workIds.length);
+        final batch = workIds.sublist(i, batchEnd);
+        final results = await Future.wait(batch.map((workId) =>
+            DownloadService.instance.checkSupplementDiff(workId)));
+        // 等待本批期间用户可能已取消：直接丢弃结果
+        if (cancelled) break;
+        for (var j = 0; j < batch.length; j++) {
+          final workId = batch[j];
+          final result = results[j];
+          if (result.error != null) {
+            // 对比失败（如服务器已删除）不再静默跳过，最后统一汇报
+            failedWorkIds.add(workId);
+            continue;
+          }
+          if (result.missing.isEmpty) continue;
+          final metadata = _metadataForWork(workId, groupedTasks);
+          entries.add(_WorkSupplementEntry(
+            workId: workId,
+            workTitle: (metadata?['title'] as String?) ?? 'RJ$workId',
+            tree: result.tree,
+            missingCount: result.missing.length,
+            metadata: metadata,
+            coverUrl: _coverUrlForWorkId(workId, host, token),
+          ));
+        }
+        comparedCount = batchEnd;
+        dialogSetState?.call(() {});
       }
+
+      // 用户取消：进度框已随取消按钮关闭，直接退出
+      if (cancelled) return;
 
       if (!mounted) return;
       if (dialogOpen) {
@@ -697,7 +750,12 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       }
 
       if (entries.isEmpty) {
-        SnackBarUtil.showSuccess(context, l10n.noFilesNeedSupplement);
+        if (failedWorkIds.isNotEmpty) {
+          SnackBarUtil.showError(
+              context, l10n.supplementCompareFailed(failedWorkIds.length));
+        } else {
+          SnackBarUtil.showSuccess(context, l10n.noFilesNeedSupplement);
+        }
         return;
       }
 
@@ -708,28 +766,31 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       );
       if (!mounted || selectedMap == null || selectedMap.isEmpty) return;
 
-      // 按作品执行补充下载
+      // 按作品执行补充下载（复用对比阶段已取到的元数据与封面地址）
       int totalAdded = 0;
-      for (final entry in selectedMap.entries) {
-        final metadata = _metadataForWork(entry.key, groupedTasks);
-        final work = metadata != null
-            ? Work.fromJson(_sanitizeMetadata(metadata))
-            : null;
-        final coverUrl = work?.getCoverImageUrl(host, token: token);
+      for (final entry in entries) {
+        final files = selectedMap[entry.workId];
+        if (files == null || files.isEmpty) continue;
         totalAdded += await DownloadService.instance.supplementDownloads(
-          entry.key,
-          entry.value,
-          workMetadata: metadata,
-          coverUrl: coverUrl,
+          entry.workId,
+          files,
+          workMetadata: entry.metadata,
+          coverUrl: entry.coverUrl,
         );
       }
       if (!mounted) return;
-      SnackBarUtil.showSuccess(
-        context,
-        totalAdded > 0
-            ? l10n.addedNFilesToDownloadQueue(totalAdded)
-            : l10n.noFilesNeedSupplement,
-      );
+      var message = totalAdded > 0
+          ? l10n.addedNFilesToDownloadQueue(totalAdded)
+          : l10n.noFilesNeedSupplement;
+      // 对比失败的作品在这里统一补报（Snackbar 同时只显示一条）
+      if (failedWorkIds.isNotEmpty) {
+        message += '\n${l10n.supplementCompareFailed(failedWorkIds.length)}';
+      }
+      if (failedWorkIds.isNotEmpty) {
+        SnackBarUtil.showWarning(context, message);
+      } else {
+        SnackBarUtil.showSuccess(context, message);
+      }
     } catch (e) {
       if (!mounted) return;
       if (dialogOpen) {
@@ -786,6 +847,23 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     return value;
   }
 
+  /// 瀑布流间距（与原 grid 的 crossAxisSpacing/mainAxisSpacing 一致）
+  static const double _gridSpacing = 12;
+
+  /// 原 grid 的 maxCrossAxisExtent，用于等价推算瀑布流列数
+  static const double _targetCardWidth = 210;
+
+  /// 集合左右 padding 之和（fromLTRB 左右各 16）
+  static const double _gridHorizontalPadding = 32;
+
+  /// 按原 `SliverGridDelegateWithMaxCrossAxisExtent(210)` 的算法推算瀑布流列数，
+  /// 保证切到瀑布流后卡片宽度与改动前一致（1080px 屏 → 5 列）。
+  int _masonryColumnsFor(double availableWidth) {
+    final usableWidth = (availableWidth - _gridHorizontalPadding)
+        .clamp(0.0, double.infinity);
+    return (usableWidth / (_targetCardWidth + _gridSpacing)).ceil().clamp(1, 12);
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -798,10 +876,6 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
         final crossAxisCount = displaySettings.applyCardSize(
           ResponsiveGridHelper.getBigGridCrossAxisCount(context),
         );
-        final isLandscape =
-            MediaQuery.orientationOf(context) == Orientation.landscape;
-        final gridSpacing = isLandscape ? 24.0 : 8.0;
-        final gridPadding = isLandscape ? 24.0 : 8.0;
 
         final tasks = snapshot.data ?? [];
         final completedTasks =
@@ -824,341 +898,283 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
 
         // 应用排序
         final sortedWorkIds = _sortWorkIds(groupedTasks);
-
-        // 计算分页
         final totalCount = sortedWorkIds.length;
         final totalPages = (totalCount / _pageSize).ceil();
-        final startIndex = (_currentPage - 1) * _pageSize;
+        final currentPage = totalPages == 0 || _currentPage < 1
+            ? 1
+            : _currentPage > totalPages
+                ? totalPages
+                : _currentPage;
+        final startIndex = (currentPage - 1) * _pageSize;
         final endIndex = (startIndex + _pageSize).clamp(0, totalCount);
+        final currentPageWorkIds = sortedWorkIds.sublist(startIndex, endIndex);
+        final toolbarTop = widget.toolbarTop;
 
-        // 获取当前页的作品
-        final currentPageWorkIds = sortedWorkIds.sublist(
-          startIndex,
-          endIndex,
-        );
-        final currentPageTasks = Map<int, List<DownloadTask>>.fromEntries(
-          currentPageWorkIds.map((id) => MapEntry(id, groupedTasks[id]!)),
-        );
-
-        return Column(
+        return Stack(
           children: [
-            // 顶部工具栏
-            _buildTopBar(allGroupedTasks),
-            // 搜索栏
-            if (_isSearchVisible) _buildSearchBar(),
-            // 内容区域
-            Expanded(
-              child: allGroupedTasks.isEmpty
-                  ? Center(
+            Positioned.fill(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // 瀑布流：tile 高度由卡片内容决定，标签多/标题长不再被固定高度
+                  // 裁剪（原 grid 用 childAspectRatio 写死 tile 高度，内容超出即裁掉）。
+                  final masonryColumns =
+                      _masonryColumnsFor(constraints.maxWidth);
+                  return VirtualizedSliverCollection<int>(
+                    collectionController: _collectionController,
+                    pageStorageKey:
+                        const PageStorageKey('local-downloads-feed'),
+                    items: currentPageWorkIds,
+                    itemId: (workId) => workId,
+                    layout: VirtualizedCollectionLayout.masonry,
+                    masonryCrossAxisCount: masonryColumns,
+                    masonryCrossAxisSpacing: _gridSpacing,
+                    masonryMainAxisSpacing: _gridSpacing,
+                    padding: EdgeInsets.fromLTRB(16, toolbarTop + 60, 16, 16),
+                    physics: ScrollOptimization.physics,
+                    pagination: totalCount == 0
+                        ? null
+                        : VirtualizedPagination(
+                            currentPage: currentPage,
+                            pageSize: _pageSize,
+                            totalCount: totalCount,
+                            hasMore: currentPage < totalPages,
+                            isLoading: false,
+                            onPreviousPage: _previousPage,
+                            onNextPage: () => _nextPage(totalPages),
+                            onGoToPage: _goToPage,
+                            nextPageOnOverscroll: true,
+                            scrollToTop: false,
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                          ),
+                    showEndIndicator: false,
+                    emptyBuilder: (context) => Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(
-                            Icons.download_outlined,
+                            allGroupedTasks.isEmpty
+                                ? Icons.download_outlined
+                                : Icons.search_off,
                             size: 64,
                             color: Theme.of(context).colorScheme.outline,
                           ),
                           const SizedBox(height: 16),
                           Text(
-                            S.of(context).noLocalDownloads,
+                            allGroupedTasks.isEmpty
+                                ? S.of(context).noLocalDownloads
+                                : S.of(context).noResults,
                             style: TextStyle(
                               fontSize: 16,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
+                              color:
+                                  Theme.of(context).colorScheme.onSurfaceVariant,
                             ),
                           ),
                         ],
                       ),
-                    )
-                  : groupedTasks.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.search_off,
-                                size: 64,
-                                color: Theme.of(context).colorScheme.outline,
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                S.of(context).noResults,
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
-                                ),
-                              ),
-                            ],
-                          ),
-                        )
-                      : OverscrollNextPageDetector(
-                          hasNextPage: _currentPage < totalPages,
-                          isLoading: false,
-                          onNextPage: () async {
-                            _nextPage(totalPages);
-                            // 等待一帧后滚动到顶部，确保内容已加载
-                            await Future.delayed(
-                                const Duration(milliseconds: 50));
-                            WidgetsBinding.instance.addPostFrameCallback((_) {
-                              _scrollToTop();
-                            });
-                          },
-                          child: CustomScrollView(
-                            controller: _scrollController,
-                            cacheExtent: ScrollOptimization.cacheExtent,
-                            physics: ScrollOptimization.physics,
-                            slivers: [
-                              SliverPadding(
-                                padding: EdgeInsets.fromLTRB(
-                                    gridPadding, 8, gridPadding, gridPadding),
-                                sliver: SliverMasonryGrid.count(
-                                  crossAxisCount: crossAxisCount,
-                                  crossAxisSpacing: gridSpacing,
-                                  mainAxisSpacing: gridSpacing,
-                                  childCount: currentPageTasks.length,
-                                  itemBuilder: (context, index) {
-                                    final workId = currentPageWorkIds[index];
-                                    final workTasks =
-                                        currentPageTasks[workId]!;
-                                    final firstTask =
-                                        _displayTask(workId, workTasks);
-                                    final isSelected =
-                                        _selectedWorkIds.contains(workId);
-
-                                    return _buildWorkCard(
-                                      workId: workId,
-                                      workTasks: workTasks,
-                                      firstTask: firstTask,
-                                      isSelected: isSelected,
-                                      crossAxisCount: crossAxisCount,
-                                    );
-                                  },
-                                ),
-                              ),
-                              // 分页控件
-                              SliverPadding(
-                                padding:
-                                    const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                                sliver: SliverToBoxAdapter(
-                                  child: PaginationBar(
-                                    currentPage: _currentPage,
-                                    totalCount: totalCount,
-                                    pageSize: _pageSize,
-                                    hasMore: _currentPage < totalPages,
-                                    isLoading: false,
-                                    onPreviousPage: _previousPage,
-                                    onNextPage: () => _nextPage(totalPages),
-                                    onGoToPage: _goToPage,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+                    ),
+                    itemBuilder: (context, workId, index) {
+                      final workTasks = groupedTasks[workId]!;
+                      return _buildWorkCard(
+                        workId: workId,
+                        workTasks: workTasks,
+                        firstTask: _displayTask(workId, workTasks),
+                        isSelected: _selectedWorkIds.contains(workId),
+                        crossAxisCount: crossAxisCount,
+                      );
+                    },
+                  );
+                },
+              ),
             ),
+            if (widget.primaryToolbarVisible == null)
+              Positioned(
+                top: toolbarTop,
+                left: FloatingToolbarLayout.horizontalPadding(context),
+                right: FloatingToolbarLayout.horizontalPadding(context),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: _buildPrimaryToolbar(allGroupedTasks),
+                      ),
+                    ),
+                    _buildSecondaryToolbar(allGroupedTasks),
+                  ],
+                ),
+              )
+            else
+              FloatingToolbarPositionFollower(
+                primaryToolbarVisible: widget.primaryToolbarVisible!,
+                visibleTop: toolbarTop,
+                hiddenTop: widget.collapsedToolbarTop ?? toolbarTop,
+                left: FloatingToolbarLayout.horizontalPadding(context),
+                right: FloatingToolbarLayout.horizontalPadding(context),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Flexible(
+                      fit: FlexFit.loose,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: _buildPrimaryToolbar(allGroupedTasks),
+                      ),
+                    ),
+                    _buildSecondaryToolbar(allGroupedTasks),
+                  ],
+                ),
+              ),
           ],
         );
       },
     );
   }
 
-  Widget _buildTopBar(Map<int, List<DownloadTask>> groupedTasks) {
-    final isLandscape =
-        MediaQuery.of(context).orientation == Orientation.landscape;
-    final horizontalPadding = isLandscape ? 24.0 : 8.0;
+  Widget _buildPrimaryToolbar(Map<int, List<DownloadTask>> groupedTasks) {
+    if (_isSelectionMode) {
+      return FloatingToolbarSurface(
+        padding: const EdgeInsets.all(4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FloatingToolbarIconButton(
+              icon: Icons.close,
+              tooltip: S.of(context).exitSelection,
+              onPressed: _toggleSelectionMode,
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Text(
+                S.of(context).selectedCount(_selectedWorkIds.length),
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+            ),
+            FloatingToolbarIconButton(
+              icon: _selectedWorkIds.length == groupedTasks.length &&
+                      groupedTasks.isNotEmpty
+                  ? Icons.deselect
+                  : Icons.select_all,
+              tooltip: _selectedWorkIds.length == groupedTasks.length &&
+                      groupedTasks.isNotEmpty
+                  ? S.of(context).deselectAll
+                  : S.of(context).selectAll,
+              onPressed: _selectedWorkIds.length == groupedTasks.length &&
+                      groupedTasks.isNotEmpty
+                  ? _deselectAll
+                  : () => _selectAll(groupedTasks),
+            ),
+            if (_selectedWorkIds.isNotEmpty)
+              FloatingToolbarIconButton(
+                icon: Icons.cloud_download_outlined,
+                tooltip: S.of(context).supplementDownload,
+                onPressed: () => _supplementDownloadSelected(
+                  groupedTasks,
+                  _selectedWorkIds.toList(),
+                ),
+              ),
+            if (_selectedWorkIds.isNotEmpty)
+              FloatingToolbarIconButton(
+                icon: Icons.delete,
+                tooltip: S.of(context).delete,
+                onPressed: () => _deleteSelectedWorks(groupedTasks),
+              ),
+          ],
+        ),
+      );
+    }
 
-    return Container(
-      height: 56,
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      color: Theme.of(context)
-          .colorScheme
-          .surfaceContainerHighest
-          .withValues(alpha: 0.5),
-      child: _isSelectionMode
-          ? Row(
-              children: [
-                // 退出选择按钮
-                Padding(
-                  padding: EdgeInsets.only(left: horizontalPadding - 8),
-                  child: IconButton(
-                    icon: const Icon(Icons.close),
-                    iconSize: 22,
-                    padding: const EdgeInsets.all(8),
-                    constraints:
-                        const BoxConstraints(minWidth: 40, minHeight: 40),
-                    onPressed: _toggleSelectionMode,
-                    tooltip: S.of(context).exitSelection,
-                  ),
-                ),
-                // 选中数量显示
-                Text(
-                  S.of(context).selectedCount(_selectedWorkIds.length),
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const Spacer(),
-                // 全选/取消全选按钮
-                IconButton(
-                  icon: Icon(
-                    _selectedWorkIds.length == groupedTasks.length
-                        ? Icons.deselect
-                        : Icons.select_all,
-                  ),
-                  iconSize: 22,
-                  padding: const EdgeInsets.all(8),
-                  constraints:
-                      const BoxConstraints(minWidth: 40, minHeight: 40),
-                  onPressed: _selectedWorkIds.length == groupedTasks.length
-                      ? _deselectAll
-                      : () => _selectAll(groupedTasks),
-                  tooltip: _selectedWorkIds.length == groupedTasks.length
-                      ? S.of(context).deselectAll
-                      : S.of(context).selectAll,
-                ),
-                // 补充下载按钮（对选中的作品执行差异对比与补充下载）
-                if (_selectedWorkIds.isNotEmpty)
-                  IconButton(
-                    icon: const Icon(Icons.cloud_download_outlined),
-                    iconSize: 22,
-                    padding: const EdgeInsets.all(8),
-                    constraints:
-                        const BoxConstraints(minWidth: 40, minHeight: 40),
-                    onPressed: () => _supplementDownloadSelected(
-                      groupedTasks,
-                      _selectedWorkIds.toList(),
-                    ),
-                    tooltip: S.of(context).supplementDownload,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                // 删除按钮
-                if (_selectedWorkIds.isNotEmpty)
-                  IconButton(
-                    icon: const Icon(Icons.delete),
-                    iconSize: 22,
-                    padding: const EdgeInsets.all(8),
-                    constraints:
-                        const BoxConstraints(minWidth: 40, minHeight: 40),
-                    onPressed: () => _deleteSelectedWorks(groupedTasks),
-                    tooltip:
-                        '${S.of(context).delete} (${_selectedWorkIds.length})',
-                    color: Theme.of(context).colorScheme.error,
-                  ),
-                SizedBox(width: horizontalPadding - 8),
-              ],
-            )
-          : Align(
-              alignment: Alignment.centerLeft,
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // 选择按钮
-                    Padding(
-                      padding: const EdgeInsets.only(left: 20, right: 8),
-                      child: TextButton.icon(
-                        icon: const Icon(Icons.checklist, size: 20),
-                        label: Text(S.of(context).select),
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 10),
-                          backgroundColor: Theme.of(context)
-                              .colorScheme
-                              .primaryContainer
-                              .withValues(alpha: 0.5),
+    if (_isSearchVisible) {
+      return FloatingToolbarSurface(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FloatingToolbarIconButton(
+              icon: Icons.arrow_back,
+              tooltip: S.of(context).close,
+              onPressed: _toggleSearch,
+            ),
+            SizedBox(
+              width: 160,
+              child: TextField(
+                controller: _searchController,
+                autofocus: true,
+                onChanged: (value) => setState(() {
+                  _searchQuery = value;
+                  _currentPage = 1;
+                }),
+                decoration: InputDecoration(
+                  hintText: S.of(context).searchDownloads,
+                  border: InputBorder.none,
+                  isDense: true,
+                  suffixIcon: _searchQuery.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.clear, size: 18),
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() {
+                              _searchQuery = '';
+                              _currentPage = 1;
+                            });
+                          },
                         ),
-                        onPressed: _toggleSelectionMode,
-                      ),
-                    ),
-                    // 补充下载（全部）按钮
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: TextButton.icon(
-                        icon: const Icon(Icons.cloud_download_outlined,
-                            size: 20),
-                        label: Text(S.of(context).supplementDownload),
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 10),
-                          backgroundColor: Theme.of(context)
-                              .colorScheme
-                              .primaryContainer
-                              .withValues(alpha: 0.5),
-                        ),
-                        onPressed: () =>
-                            _pickWorksForSupplement(groupedTasks),
-                      ),
-                    ),
-                    // 刷新按钮
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: TextButton.icon(
-                        icon: const Icon(Icons.refresh, size: 20),
-                        label: Text(S.of(context).reload),
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 10),
-                          backgroundColor: Theme.of(context)
-                              .colorScheme
-                              .primaryContainer
-                              .withValues(alpha: 0.5),
-                        ),
-                        onPressed: _refreshMetadata,
-                      ),
-                    ),
-                    // 打开文件夹按钮（仅 Windows 和 macOS）
-                    if (Platform.isWindows ||
-                        Platform.isMacOS ||
-                        Platform.isLinux)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: TextButton.icon(
-                          icon: const Icon(Icons.folder_open, size: 20),
-                          label: Text(S.of(context).openFolder),
-                          style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 10),
-                            backgroundColor: Theme.of(context)
-                                .colorScheme
-                                .primaryContainer
-                                .withValues(alpha: 0.5),
-                          ),
-                          onPressed: _openDownloadFolder,
-                        ),
-                      ),
-                    // 搜索按钮
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: IconButton(
-                        icon: Icon(
-                          _isSearchVisible ? Icons.search_off : Icons.search,
-                          size: 22,
-                        ),
-                        padding: const EdgeInsets.all(8),
-                        constraints:
-                            const BoxConstraints(minWidth: 40, minHeight: 40),
-                        onPressed: _toggleSearch,
-                        tooltip: S.of(context).search,
-                      ),
-                    ),
-                    // 排序按钮
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: IconButton(
-                        icon: const Icon(Icons.sort, size: 22),
-                        padding: const EdgeInsets.all(8),
-                        constraints:
-                            const BoxConstraints(minWidth: 40, minHeight: 40),
-                        onPressed: _showSortDialog,
-                        tooltip: S.of(context).sortOptions,
-                      ),
-                    ),
-                  ],
                 ),
               ),
             ),
+          ],
+        ),
+      );
+    }
+
+    return FloatingToolbarSurface(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingToolbarIconButton(
+            icon: Icons.checklist,
+            tooltip: S.of(context).select,
+            onPressed: _toggleSelectionMode,
+          ),
+          FloatingToolbarIconButton(
+            icon: Icons.search,
+            tooltip: S.of(context).search,
+            onPressed: _toggleSearch,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSecondaryToolbar(Map<int, List<DownloadTask>> groupedTasks) {
+    return FloatingToolbarSurface(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingToolbarIconButton(
+            icon: Icons.cloud_download_outlined,
+            tooltip: S.of(context).supplementDownload,
+            onPressed: () => _pickWorksForSupplement(groupedTasks),
+          ),
+          FloatingToolbarIconButton(
+            icon: Icons.refresh,
+            tooltip: S.of(context).reload,
+            onPressed: _refreshMetadata,
+          ),
+          FloatingToolbarIconButton(
+            icon: Icons.sort,
+            tooltip: S.of(context).sortOptions,
+            onPressed: _showSortDialog,
+          ),
+          if (Platform.isWindows || Platform.isMacOS || Platform.isLinux)
+            FloatingToolbarIconButton(
+              icon: Icons.folder_open,
+              tooltip: S.of(context).openFolder,
+              onPressed: _openDownloadFolder,
+            ),
+        ],
+      ),
     );
   }
 
@@ -1186,48 +1202,6 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
       createdAt: DateTime.now(),
       completedAt: DateTime.now(),
       workMetadata: metadata,
-    );
-  }
-
-  Widget _buildSearchBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: Theme.of(context)
-          .colorScheme
-          .surfaceContainerHighest
-          .withValues(alpha: 0.3),
-      child: TextField(
-        controller: _searchController,
-        autofocus: true,
-        decoration: InputDecoration(
-          hintText: S.of(context).searchDownloads,
-          prefixIcon: const Icon(Icons.search, size: 20),
-          suffixIcon: _searchQuery.isNotEmpty
-              ? IconButton(
-                  icon: const Icon(Icons.clear, size: 20),
-                  onPressed: () {
-                    _searchController.clear();
-                    setState(() {
-                      _searchQuery = '';
-                      _currentPage = 1;
-                    });
-                  },
-                )
-              : null,
-          isDense: true,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-          ),
-        ),
-        onChanged: (value) {
-          setState(() {
-            _searchQuery = value;
-            _currentPage = 1;
-          });
-        },
-      ),
     );
   }
 
@@ -1264,6 +1238,7 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     final cs = Theme.of(context).colorScheme;
 
     return Container(
+      key: ValueKey(workId),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
@@ -1397,12 +1372,126 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
   }
 }
 
+/// 作品封面缩略图：优先本地已下载的封面文件（离线可用、无需网络），
+/// 否则回退到网络封面（走磁盘缓存），最后回退到占位图标。
+///
+/// 用于「选择音声 / 差异对比」对话框——那里只有标题和 RJ 号，
+/// 同名作品或元数据缺标题时会分不清是哪一个。
+class _WorkCoverThumb extends StatefulWidget {
+  final int workId;
+  final Map<String, dynamic>? metadata;
+  final String? coverUrl;
+  final double width;
+  final double height;
+
+  const _WorkCoverThumb({
+    required this.workId,
+    this.metadata,
+    this.coverUrl,
+    this.width = 44,
+    this.height = 58,
+  });
+
+  @override
+  State<_WorkCoverThumb> createState() => _WorkCoverThumbState();
+}
+
+class _WorkCoverThumbState extends State<_WorkCoverThumb> {
+  String? _localCoverPath;
+  bool _resolved = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveLocalCover();
+  }
+
+  Future<void> _resolveLocalCover() async {
+    final metadata = widget.metadata;
+    final relative = metadata?['localCoverPath'];
+    if (metadata == null || relative is! String || relative.isEmpty) {
+      _resolved = true;
+      return;
+    }
+    String? path;
+    try {
+      final dir = await DownloadService.instance
+          .getWorkDirectory(widget.workId, metadata: metadata);
+      path = DownloadService.instance.localCoverPathForMetadata(dir, metadata);
+    } catch (_) {
+      path = null; // 本地封面不可用时静默回退到网络封面
+    }
+    if (!mounted) return;
+    setState(() {
+      _resolved = true;
+      if (path != null && File(path).existsSync()) {
+        _localCoverPath = path;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final placeholder = Container(
+      color: cs.surfaceContainerHighest,
+      alignment: Alignment.center,
+      child: Icon(
+        Icons.album_outlined,
+        size: widget.width * 0.45,
+        color: cs.outline,
+      ),
+    );
+
+    Widget image;
+    if (_localCoverPath != null) {
+      image = Image.file(
+        File(_localCoverPath!),
+        fit: BoxFit.cover,
+        width: widget.width,
+        height: widget.height,
+        errorBuilder: (_, __, ___) => placeholder,
+      );
+    } else if (_resolved && (widget.coverUrl ?? '').isNotEmpty) {
+      image = CachedNetworkImage(
+        imageUrl: widget.coverUrl!,
+        httpHeaders: StorageService.serverCookieHeaders,
+        fit: BoxFit.cover,
+        width: widget.width,
+        height: widget.height,
+        placeholder: (_, __) => placeholder,
+        errorWidget: (_, __, ___) => placeholder,
+      );
+    } else {
+      // 本地封面尚未解析出来时也先占位，避免布局跳动
+      image = placeholder;
+    }
+
+    return SizedBox(
+      width: widget.width,
+      height: widget.height,
+      child: PrivacyBlurCover(
+        borderRadius: BorderRadius.circular(6),
+        sigma: 10,
+        child: image,
+      ),
+    );
+  }
+}
+
 /// 差异对比条目：一个音声作品及其在线完整文件树（含本地存在状态）
 /// 可选择的本地音声条目
 class _WorkPickEntry {
   final int workId;
   final String workTitle;
-  const _WorkPickEntry({required this.workId, required this.workTitle});
+  final Map<String, dynamic>? metadata; // 用于取本地封面文件
+  final String? coverUrl; // 网络封面兜底地址
+  const _WorkPickEntry({
+    required this.workId,
+    required this.workTitle,
+    this.metadata,
+    this.coverUrl,
+  });
 }
 
 /// 选择要对比的音声对话框：多选（默认全选），支持全选/取消全选
@@ -1441,6 +1530,8 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
     final l10n = S.of(context);
     final cs = Theme.of(context).colorScheme;
     return AlertDialog(
+      // 收紧左右留白（默认 40），给作品标题更多横向空间
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       title: Row(
         children: [
           Expanded(child: Text(l10n.supplementPickWorksTitle)),
@@ -1457,31 +1548,43 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
       content: SizedBox(
         width: double.maxFinite,
         height: 400,
-        child: ListView(
-          children: [
-            for (final w in widget.works)
-              CheckboxListTile(
-                value: _selected.contains(w.workId),
-                onChanged: (v) => setState(() {
-                  if (v == true) {
-                    _selected.add(w.workId);
-                  } else {
-                    _selected.remove(w.workId);
-                  }
-                }),
-                controlAffinity: ListTileControlAffinity.leading,
-                title: Text(
-                  w.workTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  'RJ${w.workId.toString().padLeft(6, '0')}',
-                  style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-                ),
-                secondary: Icon(Icons.album_outlined, color: cs.primary),
+        // 用 builder 按需构建：本地作品可能有几百个，每个行都要解析封面，
+        // 一次性全建会同时发起几百个文件系统查询。
+        child: ListView.builder(
+          // 不能复用外层的 PrimaryScrollController，否则会继承
+          // 已下载页面的滚动位置，弹窗一打开就停在列表中间
+          primary: false,
+          itemCount: widget.works.length,
+          itemBuilder: (context, index) {
+            final w = widget.works[index];
+            return CheckboxListTile(
+              value: _selected.contains(w.workId),
+              onChanged: (v) => setState(() {
+                if (v == true) {
+                  _selected.add(w.workId);
+                } else {
+                  _selected.remove(w.workId);
+                }
+              }),
+              controlAffinity: ListTileControlAffinity.leading,
+              title: Text(
+                w.workTitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
-          ],
+              subtitle: Text(
+                formatRJCode(w.workId),
+                style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+              ),
+              secondary: _WorkCoverThumb(
+                workId: w.workId,
+                metadata: w.metadata,
+                coverUrl: w.coverUrl,
+                width: 36,
+                height: 48,
+              ),
+            );
+          },
         ),
       ),
       actions: [
@@ -1510,11 +1613,15 @@ class _WorkSupplementEntry {
   final String workTitle;
   final List<SupplementFileNode> tree; // 在线完整文件树（根目录开始）
   final int missingCount; // 缺失文件数
+  final Map<String, dynamic>? metadata; // 本地封面 + 后续入队复用
+  final String? coverUrl; // 网络封面兜底地址
   const _WorkSupplementEntry({
     required this.workId,
     required this.workTitle,
     required this.tree,
     required this.missingCount,
+    this.metadata,
+    this.coverUrl,
   });
 }
 
@@ -1531,17 +1638,48 @@ class _SupplementDiffDialog extends StatefulWidget {
 }
 
 class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
+  /// 行条统一高度
+  static const double _rowHeight = 44;
+
+  /// 每层目录的缩进宽度
+  static const double _indentPerLevel = 16;
+
+  /// 勾选框槽位宽度（已存在的行也占位，保证列对齐）
+  static const double _checkSlotWidth = 26;
+
+  /// 图标槽位宽度
+  static const double _iconSlotWidth = 24;
+
   // 选中的缺失文件集合，key 格式: '$workId::$localRelativePath'
+  // 注意：不提供"全选"入口——用户下载时通常只选取部分格式
+  // （如 wav 或 mp3、有无音效），必须逐个/按文件夹手动勾选。
   final Set<String> _selected = {};
   // 展开的文件夹集合（默认全部展开）
   final Set<String> _expanded = {};
-
-  int get _totalMissingCount =>
-      widget.works.fold(0, (sum, w) => sum + w.missingCount);
+  // 收起的作品集合（默认全部展开）：点分组头或「全部收起」切换，
+  // 收起后只留标题条，一屏能看到更多音声
+  final Set<int> _collapsedWorks = {};
 
   int get _selectedFileCount => _selected.length;
 
-  bool get _allSelected => _selectedFileCount == _totalMissingCount;
+  /// 是否所有作品都处于展开状态（决定标题行按钮显示「全部收起」还是「全部展开」）
+  bool get _allWorksExpanded => _collapsedWorks.isEmpty;
+
+  void _toggleWorkCollapsed(int workId) {
+    setState(() {
+      if (!_collapsedWorks.remove(workId)) _collapsedWorks.add(workId);
+    });
+  }
+
+  void _toggleAllWorksExpanded() {
+    setState(() {
+      if (_collapsedWorks.isEmpty) {
+        _collapsedWorks.addAll(widget.works.map((w) => w.workId));
+      } else {
+        _collapsedWorks.clear();
+      }
+    });
+  }
 
   String _key(int workId, String path) => '$workId::$path';
 
@@ -1560,6 +1698,11 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
       }
 
       walk(w.tree);
+    }
+    // 同时对比多个音声时默认收起全部作品，只留标题条做总览，
+    // 避免几棵完整文件树一起铺开显得杂乱；单音声则保持全展开直接挑选
+    if (widget.works.length > 1) {
+      _collapsedWorks.addAll(widget.works.map((w) => w.workId));
     }
   }
 
@@ -1618,24 +1761,6 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     return null;
   }
 
-  void _toggleAll() {
-    setState(() {
-      if (_allSelected) {
-        _selected.clear();
-      } else {
-        for (final w in widget.works) {
-          for (final node in w.tree) {
-            final paths = <String>[];
-            _collectMissingFilePaths(node, paths);
-            for (final p in paths) {
-              _selected.add(_key(w.workId, p));
-            }
-          }
-        }
-      }
-    });
-  }
-
   // 切换文件夹展开/收起
   void _toggleExpanded(_TreeRow row) {
     setState(() {
@@ -1648,7 +1773,7 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
   List<_TreeRow> _buildRows() {
     final rows = <_TreeRow>[];
     for (final w in widget.works) {
-      _appendRows(rows, w, w.tree, const []);
+      _appendRows(rows, w, w.tree, 0);
     }
     return rows;
   }
@@ -1657,44 +1782,15 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     List<_TreeRow> rows,
     _WorkSupplementEntry work,
     List<SupplementFileNode> nodes,
-    List<bool> chain,
+    int depth,
   ) {
-    for (var i = 0; i < nodes.length; i++) {
-      final node = nodes[i];
-      final isLast = i == nodes.length - 1;
-      final lastChain = [...chain, isLast];
-      rows.add(_TreeRow(
-        work: work,
-        node: node,
-        depth: chain.length,
-        lastChain: lastChain,
-      ));
+    for (final node in nodes) {
+      rows.add(_TreeRow(work: work, node: node, depth: depth));
       if (node.isFolder &&
           _expanded.contains(_key(work.workId, node.localRelativePath))) {
-        _appendRows(rows, work, node.children, lastChain);
+        _appendRows(rows, work, node.children, depth + 1);
       }
     }
-  }
-
-  // 层级引导线：每级缩进 20px，绘制竖线/拐角标明从属关系
-  Widget _buildGuides(_TreeRow row, Color color) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var i = 0; i < row.depth; i++)
-          SizedBox(
-            width: 20,
-            height: 40,
-            child: CustomPaint(
-              painter: _TreeGuidePainter(
-                hasSibling: !row.lastChain[i],
-                isCurrent: i == row.depth - 1,
-                color: color,
-              ),
-            ),
-          ),
-      ],
-    );
   }
 
   // 根据扩展名选择合适的文件图标
@@ -1733,193 +1829,236 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     return paths.length;
   }
 
-  // 渲染单行树节点（文件夹 / 已存在文件 / 缺失文件）
-  Widget _buildNodeRow(_TreeRow row) {
+  // 行标题：扩展名单独拆出来渲染，省略号只截断主干名，
+  // 不再把 .wav / .mp3 这类用来区分格式的关键后缀吃掉。
+  Widget _buildTitle(SupplementFileNode node) {
     final cs = Theme.of(context).colorScheme;
-    final node = row.node;
-    final guides = _buildGuides(row, cs.outlineVariant);
-
-    if (node.isFolder) {
-      final key = _key(row.work.workId, node.localRelativePath);
-      final expanded = _expanded.contains(key);
-      final state = _folderState(row.work, node);
-      final missing = _folderMissingCount(node);
-      return InkWell(
-        onTap: () => _toggleExpanded(row),
-        child: SizedBox(
-          height: 40,
-          child: Row(
-            children: [
-              guides,
-              const SizedBox(width: 2),
-              Checkbox(
-                value: state,
-                tristate: true,
-                onChanged: (v) => _toggleFolder(row.work, node, v == true),
-              ),
-              const SizedBox(width: 2),
-              Icon(
-                expanded ? Icons.folder_open : Icons.folder,
-                size: 18,
-                color: cs.tertiary,
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  node.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                missing > 0 ? S.of(context).supplementMissingCount(missing) : '',
-                style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-              ),
-              const SizedBox(width: 8),
-              Icon(
-                expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                size: 18,
-                color: cs.outline,
-              ),
-            ],
-          ),
-        ),
+    final style = TextStyle(
+      fontSize: 13,
+      fontWeight: node.isFolder ? FontWeight.w600 : FontWeight.w400,
+      color: node.exists && !node.isFolder ? cs.onSurfaceVariant : cs.onSurface,
+    );
+    final title = node.title;
+    final dot = node.isFolder ? -1 : title.lastIndexOf('.');
+    // 没有扩展名，或点号在首尾（隐藏文件 / 结尾点）时按普通文本渲染
+    if (dot <= 0 || dot >= title.length - 1) {
+      return Text(
+        title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style,
       );
     }
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            title.substring(0, dot),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: style,
+          ),
+        ),
+        Text(
+          title.substring(dot),
+          maxLines: 1,
+          style: style.copyWith(fontSize: 11, color: cs.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
 
-    if (node.exists) {
-      // 本地已存在：不可勾选，标记"已存在"
-      return SizedBox(
-        height: 40,
+  // 渲染单行条：文件夹 / 已存在文件 / 缺失文件共用同一套列宽，
+  // 右侧信息统一右对齐成一列；选中行整条高亮 + 左缘竖条。
+  Widget _buildNodeRow(_TreeRow row, {required bool showDivider}) {
+    final cs = Theme.of(context).colorScheme;
+    final l10n = S.of(context);
+    final node = row.node;
+
+    Widget? leading;
+    Widget? iconSlot;
+    Widget? meta;
+    VoidCallback? onTap;
+    var selectedRow = false;
+
+    if (node.isFolder) {
+      final folderKey = _key(row.work.workId, node.localRelativePath);
+      final expanded = _expanded.contains(folderKey);
+      final missing = _folderMissingCount(node);
+      leading = Checkbox(
+        value: _folderState(row.work, node),
+        tristate: true,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        onChanged: (v) => _toggleFolder(row.work, node, v == true),
+      );
+      iconSlot = Icon(
+        expanded ? Icons.folder_open : Icons.folder,
+        size: 17,
+        color: cs.tertiary,
+      );
+      meta = Text(
+        missing > 0 ? l10n.supplementMissingCount(missing) : '',
+        style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+      );
+      onTap = () => _toggleExpanded(row);
+    } else if (node.exists) {
+      // 本地已存在：不可勾选；图标弱化，让"缺失可下载"的行更醒目
+      leading = Icon(Icons.check_circle, size: 17, color: cs.outline);
+      iconSlot = const SizedBox.shrink();
+      meta = Text(
+        l10n.supplementAlreadyExists,
+        style: TextStyle(fontSize: 11, color: cs.outline),
+      );
+    } else {
+      final fileKey = _key(row.work.workId, node.localRelativePath);
+      final selected = _selected.contains(fileKey);
+      selectedRow = selected;
+      leading = Checkbox(
+        value: selected,
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        onChanged: (v) => _toggleFile(fileKey, v ?? false),
+      );
+      iconSlot = Icon(
+        _fileIcon(node.title),
+        size: 17,
+        color: cs.onSurfaceVariant,
+      );
+      meta = Text(
+        formatBytes(node.file?.size ?? 0),
+        style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+      );
+      onTap = () => _toggleFile(fileKey, !selected);
+    }
+
+    final rowContent = Container(
+      height: _rowHeight,
+      decoration: BoxDecoration(
+        border: showDivider
+            ? Border(
+                bottom: BorderSide(color: cs.outlineVariant, width: 0.5),
+              )
+            : null,
+      ),
+      child: Row(
+        children: [
+          // 选中态左缘竖条：始终占位，避免选中时整行内容位移
+          Container(
+            width: 2,
+            height: _rowHeight,
+            color: selectedRow ? cs.primary : Colors.transparent,
+          ),
+          const SizedBox(width: 8),
+          SizedBox(width: _indentPerLevel * row.depth),
+          SizedBox(
+            width: _checkSlotWidth,
+            child: Align(alignment: Alignment.centerLeft, child: leading),
+          ),
+          SizedBox(
+            width: _iconSlotWidth,
+            child: Align(alignment: Alignment.centerLeft, child: iconSlot),
+          ),
+          Expanded(child: _buildTitle(node)),
+          const SizedBox(width: 8),
+          meta,
+          // 文件夹留出展开箭头位，文件行用等宽占位，保证右端对齐
+          if (node.isFolder)
+            Icon(
+              _expanded.contains(_key(row.work.workId, node.localRelativePath))
+                  ? Icons.keyboard_arrow_up
+                  : Icons.keyboard_arrow_down,
+              size: 18,
+              color: cs.outline,
+            )
+          else
+            const SizedBox(width: 18),
+        ],
+      ),
+    );
+
+    return Material(
+      color: selectedRow
+          ? cs.primaryContainer.withValues(alpha: 0.35)
+          : Colors.transparent,
+      child: onTap == null
+          ? rowContent
+          : InkWell(onTap: onTap, child: rowContent),
+    );
+  }
+
+  // 作品分组头部：标题条（封面 + 序号 + 缺失徽标），点按可收起/展开该音声，
+  // 收起后只留这一条，一屏能容纳更多音声
+  Widget _buildWorkHeader(_WorkSupplementEntry work, int index) {
+    final cs = Theme.of(context).colorScheme;
+    final l10n = S.of(context);
+    final collapsed = _collapsedWorks.contains(work.workId);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 8, 12, 8),
+      decoration: BoxDecoration(
+        color: cs.primaryContainer.withValues(alpha: 0.55),
+        border: Border(
+          // 收起时没有行条，底边不需要分隔线
+          bottom: collapsed
+              ? BorderSide.none
+              : BorderSide(color: cs.outlineVariant, width: 0.5),
+        ),
+      ),
+      child: InkWell(
+        onTap: () => _toggleWorkCollapsed(work.workId),
         child: Row(
           children: [
-            guides,
-            const SizedBox(width: 2),
-            const SizedBox(width: 40), // checkbox 占位
-            Icon(Icons.check_circle, size: 17, color: cs.primary),
-            const SizedBox(width: 6),
+            _WorkCoverThumb(
+              workId: work.workId,
+              metadata: work.metadata,
+              coverUrl: work.coverUrl,
+              width: 32,
+              height: 42,
+            ),
+            const SizedBox(width: 10),
+            // 标题 + RJ 号竖排；缺失徽标靠右，不再挤占标题宽度
             Expanded(
-              child: Text(
-                node.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${index + 1}. ${work.workTitle}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 1),
+                  Text(
+                    formatRJCode(work.workId),
+                    style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                  ),
+                ],
               ),
             ),
             const SizedBox(width: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                color: cs.primaryContainer.withValues(alpha: 0.5),
+                color: cs.errorContainer,
                 borderRadius: BorderRadius.circular(999),
               ),
               child: Text(
-                S.of(context).supplementAlreadyExists,
-                style: TextStyle(fontSize: 11, color: cs.onPrimaryContainer),
+                l10n.supplementMissingCount(work.missingCount),
+                style: TextStyle(fontSize: 11, color: cs.onErrorContainer),
               ),
             ),
-            const SizedBox(width: 8),
+            // 展开状态箭头，与文件夹行一致：展开朝上、收起朝下
+            Icon(
+              collapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
+              size: 18,
+              color: cs.outline,
+            ),
           ],
         ),
-      );
-    }
-
-    // 缺失文件：可勾选
-    final key = _key(row.work.workId, node.localRelativePath);
-    final selected = _selected.contains(key);
-    return InkWell(
-      onTap: () => _toggleFile(key, !selected),
-      child: SizedBox(
-        height: 40,
-        child: Row(
-          children: [
-            guides,
-            const SizedBox(width: 2),
-            Checkbox(
-              value: selected,
-              onChanged: (v) => _toggleFile(key, v ?? false),
-            ),
-            const SizedBox(width: 2),
-            Icon(_fileIcon(node.title), size: 18, color: cs.onSurfaceVariant),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                node.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 13),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              formatBytes(node.file?.size ?? 0),
-              style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-            ),
-            const SizedBox(width: 8),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // 作品分组头部：渐变底色 + 序号 + 缺失徽标，强化多音声区分
-  Widget _buildWorkHeader(_WorkSupplementEntry work, int index) {
-    final cs = Theme.of(context).colorScheme;
-    final l10n = S.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            cs.primaryContainer.withValues(alpha: 0.85),
-            cs.surfaceContainerHighest.withValues(alpha: 0.5),
-          ],
-        ),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 12,
-            backgroundColor: cs.primary,
-            child: Text(
-              '${index + 1}',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                color: cs.onPrimary,
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Icon(Icons.album_outlined, size: 18, color: cs.primary),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              '${work.workTitle} (RJ${work.workId.toString().padLeft(6, '0')})',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: cs.errorContainer,
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              l10n.supplementMissingCount(work.missingCount),
-              style: TextStyle(fontSize: 11, color: cs.onErrorContainer),
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -1934,43 +2073,81 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     for (final r in rows) {
       grouped.putIfAbsent(r.work.workId, () => []).add(r);
     }
+    final totalMissing =
+        widget.works.fold<int>(0, (sum, w) => sum + w.missingCount);
     return AlertDialog(
-      title: Row(
-        children: [
-          Expanded(child: Text(l10n.supplementPickTitle)),
-          TextButton.icon(
-            onPressed: _toggleAll,
-            icon: Icon(
-              _allSelected ? Icons.deselect : Icons.select_all,
-              size: 18,
-            ),
-            label: Text(_allSelected ? l10n.deselectAll : l10n.selectAll),
-          ),
-        ],
-      ),
+      // 收紧左右留白（默认 40），行条内能多显示几个字符
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+      title: Text(l10n.supplementPickTitle),
+      contentPadding: EdgeInsets.zero,
       content: SizedBox(
         width: double.maxFinite,
         height: 520,
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  l10n.selectedCount(_selectedFileCount),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+            // 摘要条：已选数量 + 缺失总数并成一条，替代原来孤立的一行；
+            // 右侧放「全部收起/全部展开」，收起后每音声只剩标题条方便总览
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 4, 8, 4),
+              color: cs.surfaceContainerHighest.withValues(alpha: 0.6),
+              child: Row(
+                children: [
+                  Text(
+                    l10n.selectedCount(_selectedFileCount),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Container(width: 1, height: 12, color: cs.outlineVariant),
+                  const SizedBox(width: 10),
+                  Text(
+                    l10n.supplementMissingCount(totalMissing),
+                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onPressed: _toggleAllWorksExpanded,
+                    icon: Icon(
+                      _allWorksExpanded ? Icons.unfold_less : Icons.unfold_more,
+                      size: 16,
+                    ),
+                    label: Text(
+                      _allWorksExpanded ? l10n.collapseAll : l10n.expandAll,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
               ),
             ),
-            const Divider(height: 8),
             Expanded(
-              child: ListView(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                children: [
-                  for (var i = 0; i < widget.works.length; i++) ...[
-                    // 分组卡片：头部 + 树行
-                    Container(
+              // 按需构建分组卡片：封面解析只发生在可见的分组上
+              child: ListView.builder(
+                // 独立滚动位置，避免继承外层页面的 PrimaryScrollController
+                primary: false,
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                itemCount: widget.works.length,
+                itemBuilder: (context, i) {
+                  final work = widget.works[i];
+                  // 收起的作品不渲染行条，只留标题条
+                  final collapsed = _collapsedWorks.contains(work.workId);
+                  final workRows = collapsed
+                      ? const <_TreeRow>[]
+                      : (grouped[work.workId] ?? const <_TreeRow>[]);
+                  return Padding(
+                    padding: EdgeInsets.only(
+                      bottom: i != widget.works.length - 1 ? 12 : 0,
+                    ),
+                    // 分组卡片：标题条 + 行条
+                    child: Container(
                       clipBehavior: Clip.antiAlias,
                       decoration: BoxDecoration(
                         border: Border.all(color: cs.outlineVariant),
@@ -1979,17 +2156,17 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          _buildWorkHeader(widget.works[i], i),
-                          const Divider(height: 1),
-                          ...(grouped[widget.works[i].workId] ?? [])
-                              .map(_buildNodeRow),
+                          _buildWorkHeader(work, i),
+                          for (var r = 0; r < workRows.length; r++)
+                            _buildNodeRow(
+                              workRows[r],
+                              showDivider: r != workRows.length - 1,
+                            ),
                         ],
                       ),
                     ),
-                    if (i != widget.works.length - 1)
-                      const SizedBox(height: 12),
-                  ],
-                ],
+                  );
+                },
               ),
             ),
           ],
@@ -2000,85 +2177,57 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
           onPressed: () => Navigator.pop(context, null),
           child: Text(l10n.cancel),
         ),
-        TextButton(
-          onPressed: () {
-            // 按作品分组返回选中的缺失文件
-            final result = <int, List<SupplementFile>>{};
-            for (final work in widget.works) {
-              final files = <SupplementFile>[];
-              void collect(SupplementFileNode node) {
-                if (!node.isFolder) {
-                  if (!node.exists &&
-                      node.file != null &&
-                      _selected.contains(
-                          _key(work.workId, node.localRelativePath))) {
-                    files.add(node.file!);
-                  }
-                  return;
-                }
-                for (final c in node.children) {
-                  collect(c);
-                }
-              }
+        // 必须手动选择文件后才能补充下载（不提供"全部补全"），
+        // 未选中任何文件时禁用
+        FilledButton(
+          onPressed: _selectedFileCount == 0
+              ? null
+              : () {
+                  // 按作品分组返回选中的缺失文件
+                  final result = <int, List<SupplementFile>>{};
+                  for (final work in widget.works) {
+                    final files = <SupplementFile>[];
+                    void collect(SupplementFileNode node) {
+                      if (!node.isFolder) {
+                        if (!node.exists &&
+                            node.file != null &&
+                            _selected.contains(
+                                _key(work.workId, node.localRelativePath))) {
+                          files.add(node.file!);
+                        }
+                        return;
+                      }
+                      for (final c in node.children) {
+                        collect(c);
+                      }
+                    }
 
-              for (final node in work.tree) {
-                collect(node);
-              }
-              if (files.isNotEmpty) result[work.workId] = files;
-            }
-            Navigator.pop(context, result);
-          },
-          child: Text(l10n.download),
+                    for (final node in work.tree) {
+                      collect(node);
+                    }
+                    if (files.isNotEmpty) result[work.workId] = files;
+                  }
+                  Navigator.pop(context, result);
+                },
+          child: Text(
+            _selectedFileCount == 0
+                ? l10n.download
+                : '${l10n.download} ${l10n.nFiles(_selectedFileCount)}',
+          ),
         ),
       ],
     );
   }
 }
 
-/// 平铺后的树行：记录所在作品、节点、层级深度与"是否最后子节点"链
+/// 平铺后的树行：记录所在作品、节点与层级深度
 class _TreeRow {
   final _WorkSupplementEntry work;
   final SupplementFileNode node;
   final int depth;
-  final List<bool> lastChain;
   const _TreeRow({
     required this.work,
     required this.node,
     required this.depth,
-    required this.lastChain,
   });
-}
-
-/// 树形引导线画笔：竖线 + 拐角横线，标明目录层级从属关系
-class _TreeGuidePainter extends CustomPainter {
-  final bool hasSibling; // 该层级之后是否还有兄弟节点（竖线需贯穿）
-  final bool isCurrent; // 是否为当前节点所在层级（需绘制横线拐角）
-  final Color color;
-  const _TreeGuidePainter({
-    required this.hasSibling,
-    required this.isCurrent,
-    required this.color,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 1.2;
-    final midY = size.height / 2;
-    final x = size.width / 2;
-    canvas.drawLine(Offset(x, 0), Offset(x, midY), paint);
-    if (hasSibling) {
-      canvas.drawLine(Offset(x, midY), Offset(x, size.height), paint);
-    }
-    if (isCurrent) {
-      canvas.drawLine(Offset(x, midY), Offset(size.width, midY), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_TreeGuidePainter oldDelegate) =>
-      oldDelegate.hasSibling != hasSibling ||
-      oldDelegate.isCurrent != isCurrent ||
-      oldDelegate.color != color;
 }
