@@ -216,9 +216,16 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
         displaySettings.scaleFontSize(isLandscape ? 12.0 : 10.0);
     final dateFontSize =
         displaySettings.scaleFontSize(isLandscape ? 11.0 : 9.0);
+    final circleFontSize =
+        displaySettings.scaleFontSize(isLandscape ? 12.0 : 10.0);
     final hasReleaseDate = displaySettings.showReleaseDate &&
         widget.work.release != null &&
         widget.work.release!.trim().isNotEmpty;
+    final hasCircle = displaySettings.showCircle &&
+        widget.work.name != null &&
+        widget.work.name!.trim().isNotEmpty;
+    final hasVoiceActors =
+        widget.work.vas != null && widget.work.vas!.isNotEmpty;
     final colorScheme = Theme.of(context).colorScheme;
 
     return Card(
@@ -304,6 +311,24 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
                           fontSize: titleFontSize,
                         ),
                   ),
+                  // 社团名称（与其他布局保持一致，缺失会导致窄卡片看不出社团）
+                  if (hasCircle) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      widget.work.name!.trim(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                            fontSize: circleFontSize,
+                          ),
+                    ),
+                  ],
+                  // 声优（窄卡片最多展示 4 位，其余折叠为"+N"）
+                  if (hasVoiceActors) ...[
+                    const SizedBox(height: 3),
+                    _buildVoiceActorsRow(context, maxItems: 4),
+                  ],
                   // 标签行（瀑布流 tile 高度自适应，标签全部展示不截断）
                   if (widget.work.tags != null && widget.work.tags!.isNotEmpty) ...[
                     const SizedBox(height: 3),
@@ -980,26 +1005,54 @@ class _EnhancedWorkCardState extends ConsumerState<EnhancedWorkCard> {
     );
   }
 
-  Widget _buildVoiceActorsRow(BuildContext context) {
+  /// [maxItems] 限制展示的声优数量，超出部分折叠为"+N"。
+  /// 窄卡片（compact 布局）传入较小值，避免卡片被撑得过高。
+  Widget _buildVoiceActorsRow(BuildContext context, {int? maxItems}) {
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     final displaySettings = ref.watch(workCardDisplayProvider);
     final fontSize = displaySettings.scaleFontSize(isLandscape ? 13.0 : 10.0);
+
+    final vas = widget.work.vas!;
+    final visibleVas =
+        (maxItems != null && vas.length > maxItems) ? vas.take(maxItems) : vas;
+    final overflowCount = vas.length - visibleVas.length;
 
     return Container(
       constraints: const BoxConstraints(minHeight: 14),
       child: Wrap(
         spacing: 3,
         runSpacing: 2,
-        children: widget.work.vas!.map((va) {
-          return VaChip(
-            va: va,
-            fontSize: fontSize,
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-            borderRadius: 6,
-            fontWeight: FontWeight.w500,
-          );
-        }).toList(),
+        children: [
+          ...visibleVas.map((va) {
+            return VaChip(
+              va: va,
+              fontSize: fontSize,
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              borderRadius: 6,
+              fontWeight: FontWeight.w500,
+            );
+          }),
+          if (overflowCount > 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              decoration: BoxDecoration(
+                color: Theme.of(context)
+                    .colorScheme
+                    .surfaceContainerHighest
+                    .withValues(alpha: 0.8),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                '+$overflowCount',
+                style: TextStyle(
+                  fontSize: fontSize,
+                  fontWeight: FontWeight.w500,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
