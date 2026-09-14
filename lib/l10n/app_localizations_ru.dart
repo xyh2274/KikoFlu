@@ -446,6 +446,16 @@ class SRu extends S {
       'Ограничить количество одновременных задач загрузки';
 
   @override
+  String maxConcurrentDownloadsValue(int count) {
+    return 'Одновременных загрузок: $count';
+  }
+
+  @override
+  String maxConcurrentDownloadsCount(int count) {
+    return '$count одновременно';
+  }
+
+  @override
   String get cacheManagement => 'Управление кешем';
 
   @override

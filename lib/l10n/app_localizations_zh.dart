@@ -431,6 +431,16 @@ class SZh extends S {
   String get maxConcurrentDownloadsSubtitle => '限制同时进行的下载任务数量';
 
   @override
+  String maxConcurrentDownloadsValue(int count) {
+    return '同时下载 $count 个';
+  }
+
+  @override
+  String maxConcurrentDownloadsCount(int count) {
+    return '$count 个同时下载';
+  }
+
+  @override
   String get cacheManagement => '缓存管理';
 
   @override
@@ -4177,6 +4187,16 @@ class SZhHant extends SZh {
 
   @override
   String get maxConcurrentDownloadsSubtitle => '限制同時進行的下載任務數量';
+
+  @override
+  String maxConcurrentDownloadsValue(int count) {
+    return '同時下載 $count 個';
+  }
+
+  @override
+  String maxConcurrentDownloadsCount(int count) {
+    return '$count 個同時下載';
+  }
 
   @override
   String get cacheManagement => '快取管理';

@@ -444,6 +444,16 @@ class SEn extends S {
       'Limit simultaneous download tasks';
 
   @override
+  String maxConcurrentDownloadsValue(int count) {
+    return '$count downloading at the same time';
+  }
+
+  @override
+  String maxConcurrentDownloadsCount(int count) {
+    return '$count concurrent';
+  }
+
+  @override
   String get cacheManagement => 'Cache Management';
 
   @override

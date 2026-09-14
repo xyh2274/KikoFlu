@@ -370,6 +370,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Widget _buildDownloadAndCacheCard(BuildContext context) {
+    final concurrent = ref.watch(downloadConcurrencyProvider);
     return SettingsSectionList(
       children: [
         SettingsNavigationTile(
@@ -383,6 +384,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             );
           },
+        ),
+        SettingsListTile(
+          icon: Icons.format_list_numbered,
+          title: S.of(context).maxConcurrentDownloads,
+          subtitle: S.of(context).maxConcurrentDownloadsValue(concurrent),
+          onTap: () => _showDownloadConcurrencyPicker(context),
         ),
         SettingsNavigationTile(
           icon: Icons.storage,
@@ -431,6 +438,33 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ],
         onChanged: (index) {
           ref.read(localeProvider.notifier).setLocale(options[index].$2);
+          return true;
+        },
+      ),
+    );
+  }
+
+  // 同时下载数量选择：数值过大易卡顿，也容易触发上游接口限流
+  void _showDownloadConcurrencyPicker(BuildContext context) {
+    final current = ref.read(downloadConcurrencyProvider);
+    showDialog(
+      context: context,
+      builder: (dialogContext) => CommonOptionDialog<int>(
+        title: S.of(dialogContext).maxConcurrentDownloads,
+        icon: Icons.format_list_numbered,
+        description: S.of(dialogContext).maxConcurrentDownloadsSubtitle,
+        value: current,
+        options: [
+          for (final value in const [1, 2, 3, 4, 6, 8, 10, 12, 15, 20])
+            RadioOption(
+              value: value,
+              title:
+                  Text(S.of(dialogContext).maxConcurrentDownloadsCount(value)),
+            ),
+        ],
+        onChanged: (value) {
+          ref.read(downloadConcurrencyProvider.notifier).setConcurrent(value);
+          DownloadService.instance.setMaxConcurrentDownloads(value);
           return true;
         },
       ),

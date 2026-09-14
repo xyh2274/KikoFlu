@@ -191,6 +191,48 @@ final subtitleLibraryPriorityProvider = StateNotifierProvider<
   return SubtitleLibraryPriorityNotifier();
 });
 
+/// 同时下载数量（1–20，默认 5）。
+/// 并发过高会让大队列同时下载时造成 UI 卡顿，
+/// 也容易触发上游接口限流/屏蔽。
+class DownloadConcurrencyNotifier extends StateNotifier<int> {
+  static const String preferenceKey = 'download_max_concurrent';
+  static const int defaultValue = 5;
+  static const int minValue = 1;
+  static const int maxValue = 20;
+
+  DownloadConcurrencyNotifier() : super(defaultValue) {
+    _loadPreference();
+  }
+
+  static int normalize(int value) =>
+      value.clamp(minValue, maxValue).toInt();
+
+  Future<void> _loadPreference() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      state = normalize(prefs.getInt(preferenceKey) ?? defaultValue);
+    } catch (_) {
+      state = defaultValue;
+    }
+  }
+
+  Future<void> setConcurrent(int value) async {
+    state = normalize(value);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(preferenceKey, state);
+    } catch (_) {
+      // 保存失败时保留内存值
+    }
+  }
+}
+
+/// 同时下载数量提供者
+final downloadConcurrencyProvider =
+    StateNotifierProvider<DownloadConcurrencyNotifier, int>((ref) {
+  return DownloadConcurrencyNotifier();
+});
+
 /// Controls how tapping an audio file updates the playback queue.
 class AudioTapPlaylistModeNotifier
     extends StateNotifier<AudioTapPlaylistMode> {

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/download_task.dart';
 import '../utils/file_icon_utils.dart';
@@ -55,8 +56,28 @@ class DownloadService {
   // [_updateWorkDirectoryIndex] 直接刷新。
   Map<int, Directory>? _workDirectoryIndex;
 
-  // 并发下载控制
-  static const int _maxConcurrentDownloads = 20;
+  // 并发下载控制：用户可在「设置 → 下载与缓存 → 同时下载数量」调整。
+  // 默认 5：过高的并发会让大队列同时下载时造成 UI 卡顿，
+  // 也容易触发上游接口限流/屏蔽。
+  static const int minConcurrentDownloads = 1;
+  static const int maxConcurrentDownloadsLimit = 20;
+  static const int defaultMaxConcurrentDownloads = 5;
+  static const String _maxConcurrentPrefKey = 'download_max_concurrent';
+  int _maxConcurrentDownloads = defaultMaxConcurrentDownloads;
+
+  int get maxConcurrentDownloads => _maxConcurrentDownloads;
+
+  /// 更新并发下载数（内存值，持久化由设置页的 provider 负责）。
+  /// 放宽限制后立即调度，让排队中的任务马上开跑。
+  void setMaxConcurrentDownloads(int value) {
+    final normalized = value
+        .clamp(minConcurrentDownloads, maxConcurrentDownloadsLimit)
+        .toInt();
+    if (normalized == _maxConcurrentDownloads) return;
+    final relaxed = normalized > _maxConcurrentDownloads;
+    _maxConcurrentDownloads = normalized;
+    if (relaxed) unawaited(_processQueue());
+  }
   // O1 空间检查的安全余量（预留，避免可用空间恰好等于所需时仍失败）
   static const int _spaceMarginBytes = 32 * 1024 * 1024;
   // O3 自动重试参数：最大次数、指数退避基准秒数、退避上限秒数
@@ -90,7 +111,18 @@ class DownloadService {
   Future<void> initialize() async {
     // 初始化通知服务（O5）
     await NotificationService.instance.initialize();
-    
+
+    // 读取用户设置的并发下载数（设置页与这里共用同一个偏好键）
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _maxConcurrentDownloads =
+          (prefs.getInt(_maxConcurrentPrefKey) ?? defaultMaxConcurrentDownloads)
+              .clamp(minConcurrentDownloads, maxConcurrentDownloadsLimit)
+              .toInt();
+    } catch (_) {
+      // 读不到就用默认值
+    }
+
     await _loadTasks();
     // 恢复未完成的下载任务
     for (final task in _tasks) {

@@ -924,6 +924,18 @@ abstract class S {
   /// **'Limit simultaneous download tasks'**
   String get maxConcurrentDownloadsSubtitle;
 
+  /// No description provided for @maxConcurrentDownloadsValue.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} downloading at the same time'**
+  String maxConcurrentDownloadsValue(int count);
+
+  /// No description provided for @maxConcurrentDownloadsCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} concurrent'**
+  String maxConcurrentDownloadsCount(int count);
+
   /// No description provided for @cacheManagement.
   ///
   /// In en, this message translates to:

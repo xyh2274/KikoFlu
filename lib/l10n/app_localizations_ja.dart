@@ -432,6 +432,16 @@ class SJa extends S {
   String get maxConcurrentDownloadsSubtitle => '同時に実行するダウンロードタスクの上限';
 
   @override
+  String maxConcurrentDownloadsValue(int count) {
+    return '$count 件を同時ダウンロード中';
+  }
+
+  @override
+  String maxConcurrentDownloadsCount(int count) {
+    return '$count 件同時';
+  }
+
+  @override
   String get cacheManagement => 'キャッシュ管理';
 
   @override

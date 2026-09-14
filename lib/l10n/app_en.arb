@@ -182,6 +182,18 @@
   "downloadPathSubtitle": "Customize download file save location",
   "maxConcurrentDownloads": "Max Concurrent Downloads",
   "maxConcurrentDownloadsSubtitle": "Limit simultaneous download tasks",
+  "maxConcurrentDownloadsValue": "{count} downloading at the same time",
+  "@maxConcurrentDownloadsValue": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "maxConcurrentDownloadsCount": "{count} concurrent",
+  "@maxConcurrentDownloadsCount": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
   "cacheManagement": "Cache Management",
   "currentCache": "Current cache: {size}",
   "@currentCache": {

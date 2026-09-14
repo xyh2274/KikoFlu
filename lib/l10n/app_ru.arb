@@ -157,6 +157,8 @@
   "downloadPathSubtitle": "Настроить расположение загруженных файлов",
   "maxConcurrentDownloads": "Макс. одновременных загрузок",
   "maxConcurrentDownloadsSubtitle": "Ограничить количество одновременных задач загрузки",
+  "maxConcurrentDownloadsValue": "Одновременных загрузок: {count}",
+  "maxConcurrentDownloadsCount": "{count} одновременно",
   "cacheManagement": "Управление кешем",
   "currentCache": "Текущий кеш: {size}",
   "themeSettings": "Настройки темы",
