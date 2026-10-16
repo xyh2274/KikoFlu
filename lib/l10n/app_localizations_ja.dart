@@ -3843,4 +3843,10 @@ class SJa extends S {
 
   @override
   String get integrityNoFixable => '修復可能なファイルが選択されていません';
+
+  @override
+  String get integrityPickWorksTitle => '健診する作品を選択';
+
+  @override
+  String get integrityPickStart => '健診を開始';
 }

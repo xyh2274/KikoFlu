@@ -1281,5 +1281,8 @@
   "integrityFixSelected": "{count} 件を修復",
   "integrityAddedToQueue": "{count} 件を再ダウンロードに追加しました",
   "integrityQueued": "追加済み",
-  "integrityNoFixable": "修復可能なファイルが選択されていません"
+  "integrityNoFixable": "修復可能なファイルが選択されていません",
+
+  "integrityPickWorksTitle": "健診する作品を選択",
+  "integrityPickStart": "健診を開始"
 }

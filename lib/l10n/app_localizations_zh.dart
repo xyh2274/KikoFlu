@@ -3823,6 +3823,12 @@ class SZh extends S {
 
   @override
   String get integrityNoFixable => '没有选中可修复的文件';
+
+  @override
+  String get integrityPickWorksTitle => '选择要体检的音声';
+
+  @override
+  String get integrityPickStart => '开始体检';
 }
 
 /// The translations for Chinese, using the Han script (`zh_Hant`).
@@ -7617,4 +7623,10 @@ class SZhHant extends SZh {
 
   @override
   String get integrityNoFixable => '沒有選中可修復的檔案';
+
+  @override
+  String get integrityPickWorksTitle => '選擇要健檢的音聲';
+
+  @override
+  String get integrityPickStart => '開始健檢';
 }

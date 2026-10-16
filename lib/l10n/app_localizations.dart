@@ -7019,6 +7019,18 @@ abstract class S {
   /// In en, this message translates to:
   /// **'No fixable file selected'**
   String get integrityNoFixable;
+
+  /// No description provided for @integrityPickWorksTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Select works to check up'**
+  String get integrityPickWorksTitle;
+
+  /// No description provided for @integrityPickStart.
+  ///
+  /// In en, this message translates to:
+  /// **'Start Checkup'**
+  String get integrityPickStart;
 }
 
 class _SDelegate extends LocalizationsDelegate<S> {

@@ -1330,5 +1330,8 @@
   "integrityFixSelected": "修复 {count} 个文件",
   "integrityAddedToQueue": "已加入 {count} 个重下任务",
   "integrityQueued": "已加入",
-  "integrityNoFixable": "没有选中可修复的文件"
+  "integrityNoFixable": "没有选中可修复的文件",
+
+  "integrityPickWorksTitle": "选择要体检的音声",
+  "integrityPickStart": "开始体检"
 }

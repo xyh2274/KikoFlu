@@ -1270,5 +1270,8 @@
   "integrityFixSelected": "修復 {count} 個檔案",
   "integrityAddedToQueue": "已加入 {count} 個重下任務",
   "integrityQueued": "已加入",
-  "integrityNoFixable": "沒有選中可修復的檔案"
+  "integrityNoFixable": "沒有選中可修復的檔案",
+
+  "integrityPickWorksTitle": "選擇要健檢的音聲",
+  "integrityPickStart": "開始健檢"
 }

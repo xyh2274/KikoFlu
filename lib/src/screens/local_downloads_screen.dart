@@ -845,7 +845,11 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
 
     final selected = await showDialog<List<int>>(
       context: context,
-      builder: (context) => _WorkPickDialog(works: entries),
+      builder: (context) => _WorkPickDialog(
+        works: entries,
+        title: l10n.integrityPickWorksTitle,
+        confirmLabel: l10n.integrityPickStart,
+      ),
     );
     if (!mounted || selected == null) return;
     if (selected.isEmpty) {
@@ -1702,10 +1706,19 @@ class _WorkPickEntry {
   });
 }
 
-/// 选择要对比的音声对话框：多选（默认全选），支持全选/取消全选
+/// 选择音声对话框：多选（默认全选），支持全选/取消全选。
+///
+/// [title] / [confirmLabel] 可覆盖默认文案：「下载体检」复用本对话框，
+/// 若沿用「对比」的措辞会让用户误以为在做差异对比。
 class _WorkPickDialog extends StatefulWidget {
   final List<_WorkPickEntry> works;
-  const _WorkPickDialog({required this.works});
+  final String? title;
+  final String? confirmLabel;
+  const _WorkPickDialog({
+    required this.works,
+    this.title,
+    this.confirmLabel,
+  });
 
   @override
   State<_WorkPickDialog> createState() => _WorkPickDialogState();
@@ -1742,7 +1755,9 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       title: Row(
         children: [
-          Expanded(child: Text(l10n.supplementPickWorksTitle)),
+          Expanded(
+            child: Text(widget.title ?? l10n.supplementPickWorksTitle),
+          ),
           TextButton.icon(
             onPressed: _toggleAll,
             icon: Icon(
@@ -1809,7 +1824,7 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
         ),
         TextButton(
           onPressed: () => Navigator.pop(context, _selected.toList()),
-          child: Text(l10n.supplementCompareSelected),
+          child: Text(widget.confirmLabel ?? l10n.supplementCompareSelected),
         ),
       ],
     );

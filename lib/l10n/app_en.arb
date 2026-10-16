@@ -1607,5 +1607,8 @@
   "integrityAddedToQueue": "Added {count} file(s) to the download queue",
   "@integrityAddedToQueue": {"placeholders": {"count": {"type": "int"}}},
   "integrityQueued": "Queued",
-  "integrityNoFixable": "No fixable file selected"
+  "integrityNoFixable": "No fixable file selected",
+
+  "integrityPickWorksTitle": "Select works to check up",
+  "integrityPickStart": "Start Checkup"
 }

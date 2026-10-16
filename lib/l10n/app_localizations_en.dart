@@ -3952,4 +3952,10 @@ class SEn extends S {
 
   @override
   String get integrityNoFixable => 'No fixable file selected';
+
+  @override
+  String get integrityPickWorksTitle => 'Select works to check up';
+
+  @override
+  String get integrityPickStart => 'Start Checkup';
 }

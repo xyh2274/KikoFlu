@@ -1281,5 +1281,8 @@
   "integrityFixSelected": "Исправить: {count}",
   "integrityAddedToQueue": "Добавлено в очередь: {count}",
   "integrityQueued": "В очереди",
-  "integrityNoFixable": "Нет выбранных файлов для исправления"
+  "integrityNoFixable": "Нет выбранных файлов для исправления",
+
+  "integrityPickWorksTitle": "Выберите работы для проверки",
+  "integrityPickStart": "Начать проверку"
 }

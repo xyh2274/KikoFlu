@@ -3975,4 +3975,10 @@ class SRu extends S {
 
   @override
   String get integrityNoFixable => 'Нет выбранных файлов для исправления';
+
+  @override
+  String get integrityPickWorksTitle => 'Выберите работы для проверки';
+
+  @override
+  String get integrityPickStart => 'Начать проверку';
 }
