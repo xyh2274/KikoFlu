@@ -3,24 +3,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../providers/work_card_display_provider.dart';
-import '../widgets/scrollable_appbar.dart';
 import '../widgets/settings_section.dart';
 
 class WorkCardDisplaySettingsScreen extends ConsumerWidget {
   const WorkCardDisplaySettingsScreen({super.key});
+
+  Future<void> _resetToDefault(BuildContext context, WidgetRef ref) async {
+    await confirmAndRestoreSettingsDefaults(
+      context: context,
+      restore: ref.read(workCardDisplayProvider.notifier).resetToDefault,
+    );
+  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(workCardDisplayProvider);
     final notifier = ref.read(workCardDisplayProvider.notifier);
 
-    return Scaffold(
-      appBar: ScrollableAppBar(
-        title: Text(
-          S.of(context).workCardDisplaySettings,
-          style: const TextStyle(fontSize: 18),
-        ),
-      ),
+    return SettingsSubpageScaffold(
+      title: S.of(context).workCardDisplaySettings,
+      onRestoreDefaults: () => _resetToDefault(context, ref),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -99,6 +101,13 @@ class WorkCardDisplaySettingsScreen extends ConsumerWidget {
                 subtitle: S.of(context).showSubtitleTagOnCard,
                 value: settings.showSubtitleTag,
                 onChanged: (_) => notifier.toggleSubtitleTag(),
+              ),
+              SettingsSwitchTile(
+                icon: Icons.person,
+                title: S.of(context).ageRatingLabel,
+                subtitle: S.of(context).showAgeRatingOnCard,
+                value: settings.showAgeRating,
+                onChanged: (_) => notifier.toggleAgeRating(),
               ),
             ],
           ),

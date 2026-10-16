@@ -6,6 +6,28 @@ class AppTheme {
   // iOS 使用 Cupertino 转场以支持侧滑返回
   static const _pageTransitionsTheme = PageTransitionsTheme();
 
+  /// Apple 平台对应语言的原生 CJK 字体。
+  ///
+  /// 显式给出有限 fallback 可避免信息流滚动时反复搜索系统字体；把当前
+  /// 语言的字体放在首位，则不会再把中文界面优先渲染成日文字形。
+  @visibleForTesting
+  static List<String> iosFontFamilyFallback(Locale locale) {
+    if (locale.languageCode == 'zh') {
+      final isTraditional = locale.scriptCode == 'Hant' ||
+          locale.countryCode == 'TW' ||
+          locale.countryCode == 'HK' ||
+          locale.countryCode == 'MO';
+      return isTraditional
+          ? const ['PingFang TC', 'PingFang HK', 'Hiragino Sans']
+          : const ['PingFang SC', 'PingFang TC', 'Hiragino Sans'];
+    }
+
+    return const ['Hiragino Sans', 'PingFang SC', 'PingFang TC'];
+  }
+
+  static List<String>? _platformFontFamilyFallback(Locale locale) =>
+      Platform.isIOS ? iosFontFamilyFallback(locale) : null;
+
   // 平台字体配置
   static TextTheme? _getTextTheme() {
     if (Platform.isWindows) {
@@ -92,7 +114,7 @@ class AppTheme {
   }
 
   static ThemeData lightTheme(ColorScheme? lightDynamic,
-      [ColorSchemeType? themeType]) {
+      [ColorSchemeType? themeType, Locale? locale]) {
     final ColorScheme colorScheme;
     if (lightDynamic != null) {
       colorScheme = lightDynamic;
@@ -105,6 +127,9 @@ class AppTheme {
       useMaterial3: true,
       colorScheme: colorScheme,
       textTheme: _getTextTheme(),
+      fontFamilyFallback: _platformFontFamilyFallback(
+        locale ?? WidgetsBinding.instance.platformDispatcher.locale,
+      ),
       pageTransitionsTheme: _pageTransitionsTheme,
       appBarTheme: AppBarTheme(
         centerTitle: true,
@@ -142,7 +167,7 @@ class AppTheme {
   }
 
   static ThemeData darkTheme(ColorScheme? darkDynamic,
-      [ColorSchemeType? themeType]) {
+      [ColorSchemeType? themeType, Locale? locale]) {
     final ColorScheme colorScheme;
     if (darkDynamic != null) {
       colorScheme = darkDynamic;
@@ -155,6 +180,9 @@ class AppTheme {
       useMaterial3: true,
       colorScheme: colorScheme,
       textTheme: _getTextTheme(),
+      fontFamilyFallback: _platformFontFamilyFallback(
+        locale ?? WidgetsBinding.instance.platformDispatcher.locale,
+      ),
       pageTransitionsTheme: _pageTransitionsTheme,
       appBarTheme: AppBarTheme(
         centerTitle: true,

@@ -25,18 +25,81 @@ class FloatingLyricService {
 
   FloatingLyricService._() {
     _platform.setMethodCallHandler(_handleMethodCall);
+    if (_usesDesktopMultiWindow) {
+      onWindowsChanged.listen((_) {
+        unawaited(_syncDesktopWindowState());
+      });
+    }
   }
 
   Future<dynamic> _handleMethodCall(MethodCall call) async {
     switch (call.method) {
       case 'onClose':
-        _onCloseController.add(null);
+        _emitClose();
         break;
       case 'onTouchEnabledChanged':
         final arguments = call.arguments;
         final enabled = arguments is Map ? arguments['enabled'] == true : false;
         _onTouchEnabledChangedController.add(enabled);
         break;
+      case 'onDiagnostic':
+        _recordNativeDiagnostic(call.arguments);
+        break;
+    }
+  }
+
+  void _emitClose() {
+    _windowId = null;
+    _lastText = null;
+    _onCloseController.add(null);
+  }
+
+  Future<void> _syncDesktopWindowState() async {
+    final windowId = _windowId;
+    if (windowId == null) return;
+
+    try {
+      final windows = await WindowController.getAll();
+      if (_windowId == windowId &&
+          !windows.any((window) => window.windowId == windowId)) {
+        _emitClose();
+      }
+    } catch (e) {
+      _log.captureOutput('[FloatingLyric] 检查桌面悬浮窗状态失败: $e');
+    }
+  }
+
+  void _recordNativeDiagnostic(dynamic arguments) {
+    if (arguments is! Map) {
+      _log.warning('收到无法解析的原生诊断数据: $arguments', tag: 'FloatingLyric.iOS');
+      return;
+    }
+
+    final event = arguments['event']?.toString() ?? 'unknown_event';
+    final level = arguments['level']?.toString() ?? 'info';
+    final rawDetails = arguments['details'];
+    var details = '';
+    if (rawDetails is Map && rawDetails.isNotEmpty) {
+      final entries =
+          rawDetails.entries
+              .map((entry) => MapEntry(entry.key.toString(), entry.value))
+              .toList()
+            ..sort((a, b) => a.key.compareTo(b.key));
+      details = entries
+          .map((entry) => '${entry.key}=${entry.value}')
+          .join(', ');
+    }
+    final message = details.isEmpty ? event : '$event | $details';
+
+    switch (level) {
+      case 'error':
+        _log.error(message, tag: 'FloatingLyric.iOS');
+        break;
+      case 'warning':
+        _log.warning(message, tag: 'FloatingLyric.iOS');
+        break;
+      default:
+        _log.info(message, tag: 'FloatingLyric.iOS');
     }
   }
 
@@ -45,10 +108,13 @@ class FloatingLyricService {
     return _instance!;
   }
 
+  bool get _usesDesktopMultiWindow => Platform.isWindows || Platform.isLinux;
+
   /// 检查是否支持悬浮窗
   bool get isSupported =>
       Platform.isAndroid ||
       Platform.isWindows ||
+      Platform.isLinux ||
       Platform.isMacOS ||
       Platform.isIOS;
 
@@ -61,11 +127,18 @@ class FloatingLyricService {
       return false;
     }
 
-    if (Platform.isWindows) {
+    if (_usesDesktopMultiWindow) {
       try {
         if (_windowId != null) {
+          final existingWindowId = _windowId!;
           final result = await updateText(text);
           if (result) {
+            // Linux hides rather than destroys the secondary engine. Show it
+            // again when the feature is re-enabled so the same engine/window
+            // can be reused without accumulating hidden windows.
+            if (Platform.isLinux) {
+              await WindowController.fromWindowId(existingWindowId).show();
+            }
             // 如果更新成功，且有样式参数，也更新样式
             if (style != null) {
               await updateStyle(
@@ -81,6 +154,7 @@ class FloatingLyricService {
           }
           // 如果更新失败，说明窗口可能已关闭，重置ID并重新创建
           _windowId = null;
+          _lastText = null;
         }
 
         final Map<String, dynamic> args = {'text': text};
@@ -94,7 +168,11 @@ class FloatingLyricService {
           ),
         );
         _windowId = controller.windowId;
-        await controller.show();
+        // Linux configures its transparent GTK surface inside the secondary
+        // engine before showing it, avoiding an opaque startup flash.
+        if (Platform.isWindows) {
+          await controller.show();
+        }
         return true;
       } catch (e) {
         _log.captureOutput('[FloatingLyric] Desktop显示悬浮窗失败: $e');
@@ -108,8 +186,12 @@ class FloatingLyricService {
         args.addAll(style);
       }
       final result = await _platform.invokeMethod('show', args);
-      _log.captureOutput('[FloatingLyric] 显示悬浮窗: $text');
-      return result == true;
+      final shown = result == true;
+      _log.info(
+        '悬浮窗启动结果: $shown',
+        tag: Platform.isIOS ? 'FloatingLyric.iOS' : 'FloatingLyric',
+      );
+      return shown;
     } catch (e) {
       _log.captureOutput('[FloatingLyric] 显示悬浮窗失败: $e');
       return false;
@@ -122,15 +204,25 @@ class FloatingLyricService {
       return false;
     }
 
-    if (Platform.isWindows) {
+    if (_usesDesktopMultiWindow) {
       if (_windowId != null) {
         try {
           final controller = WindowController.fromWindowId(_windowId!);
           await controller.invokeMethod('close');
+          _log.info(
+            '桌面悬浮窗已请求隐藏: windowId=$_windowId',
+            tag: 'FloatingLyric.${Platform.operatingSystem}',
+          );
         } catch (e) {
-          _log.captureOutput('[FloatingLyric] Windows隐藏悬浮窗失败: $e');
+          _log.captureOutput('[FloatingLyric] Desktop隐藏悬浮窗失败: $e');
         }
-        _windowId = null;
+        // Linux close is a hide operation; keep the controller so a later
+        // enable can show the same secondary engine. Windows still destroys
+        // the secondary window and must clear its id.
+        if (Platform.isWindows) {
+          _windowId = null;
+        }
+        _lastText = null;
         return true;
       }
       return false;
@@ -159,7 +251,7 @@ class FloatingLyricService {
     }
     _lastText = text;
 
-    if (Platform.isWindows) {
+    if (_usesDesktopMultiWindow) {
       if (_windowId != null) {
         try {
           // _log.captureOutput('[FloatingLyric] Updating text for window $_windowId: $text');
@@ -169,10 +261,10 @@ class FloatingLyricService {
           });
           return true;
         } catch (e) {
-          _log.captureOutput('[FloatingLyric] Windows更新文本失败: $e');
+          _log.captureOutput('[FloatingLyric] Desktop更新文本失败: $e');
           // 如果是通道未注册（通常意味着窗口已关闭或未初始化），重置 ID
           if (e.toString().contains('CHANNEL_UNREGISTERED')) {
-            _windowId = null;
+            _emitClose();
           }
           return false;
         }
@@ -193,7 +285,12 @@ class FloatingLyricService {
 
   /// 检查是否有悬浮窗权限
   Future<bool> hasPermission() async {
-    if (Platform.isWindows || Platform.isMacOS || Platform.isIOS) return true;
+    if (Platform.isWindows ||
+        Platform.isLinux ||
+        Platform.isMacOS ||
+        Platform.isIOS) {
+      return true;
+    }
     if (!isSupported) {
       return false;
     }
@@ -209,7 +306,12 @@ class FloatingLyricService {
 
   /// 请求悬浮窗权限
   Future<bool> requestPermission() async {
-    if (Platform.isWindows || Platform.isMacOS || Platform.isIOS) return true;
+    if (Platform.isWindows ||
+        Platform.isLinux ||
+        Platform.isMacOS ||
+        Platform.isIOS) {
+      return true;
+    }
     if (!isSupported) {
       return false;
     }
@@ -253,16 +355,16 @@ class FloatingLyricService {
     }
     if (paddingVertical != null) params['paddingVertical'] = paddingVertical;
 
-    if (Platform.isWindows) {
+    if (_usesDesktopMultiWindow) {
       if (_windowId != null) {
         try {
           final controller = WindowController.fromWindowId(_windowId!);
           await controller.invokeMethod('updateStyle', params);
           return true;
         } catch (e) {
-          _log.captureOutput('[FloatingLyric] Windows更新样式失败: $e');
+          _log.captureOutput('[FloatingLyric] Desktop更新样式失败: $e');
           if (e.toString().contains('CHANNEL_UNREGISTERED')) {
-            _windowId = null;
+            _emitClose();
           }
           return false;
         }
@@ -280,9 +382,28 @@ class FloatingLyricService {
     }
   }
 
-  /// 设置悬浮窗触摸是否启用（仅 Android）
+  /// 设置悬浮窗触摸是否启用。
+  ///
+  /// 在桌面端禁用触摸时，悬浮窗会忽略鼠标事件，让事件传递给下面的窗口。
   Future<bool> setTouchEnabled(bool enabled) async {
-    if (!Platform.isAndroid) return true;
+    if (_usesDesktopMultiWindow) {
+      if (_windowId == null) return false;
+      try {
+        final controller = WindowController.fromWindowId(_windowId!);
+        final result = await controller.invokeMethod('setTouchEnabled', {
+          'enabled': enabled,
+        });
+        return result == true;
+      } catch (e) {
+        _log.captureOutput('[FloatingLyric] Desktop设置触摸模式失败: $e');
+        if (e.toString().contains('CHANNEL_UNREGISTERED')) {
+          _emitClose();
+        }
+        return false;
+      }
+    }
+
+    if (!Platform.isAndroid && !Platform.isMacOS) return true;
     try {
       final result = await _platform.invokeMethod('setTouchEnabled', {
         'enabled': enabled,

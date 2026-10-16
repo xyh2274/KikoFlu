@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:archive/archive.dart';
 import 'package:gbk_codec/gbk_codec.dart';
 import 'package:path/path.dart' as p;
+import 'android_subtitle_directory_picker.dart';
 import 'download_path_service.dart';
 import 'log_service.dart';
 import 'subtitle_database.dart';
@@ -17,6 +18,20 @@ class SubtitleLibraryService {
   static final _log = LogService.instance;
   static const String _libraryFolderName = 'subtitle_library';
   static const String _cacheFileName = 'library_cache.json';
+  static const List<String> _supportedSubtitleExtensions = [
+    'vtt',
+    'srt',
+    'lrc',
+    'txt',
+    'ass',
+    'ssa',
+    'sub',
+    'idx',
+    'sbv',
+    'dfxp',
+    'ttml',
+  ];
+  static const _androidDirectoryPicker = AndroidSubtitleDirectoryPicker();
 
   // Windows 路径长度限制 (保留一些余量)
   static const int _maxPathLength = SubtitleLibraryRules.maxPathLength;
@@ -445,19 +460,7 @@ class SubtitleLibraryService {
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: [
-          'vtt',
-          'srt',
-          'lrc',
-          'txt',
-          'ass',
-          'ssa',
-          'sub',
-          'idx',
-          'sbv',
-          'dfxp',
-          'ttml'
-        ],
+        allowedExtensions: _supportedSubtitleExtensions,
         allowMultiple: true,
       );
 
@@ -551,8 +554,17 @@ class SubtitleLibraryService {
   /// [onProgress] - 进度回调，参数为当前进度消息
   static Future<ImportResult> importFolder(
       {Function(String)? onProgress}) async {
+    AndroidSubtitleDirectorySelection? androidSelection;
     try {
-      final directoryPath = await FilePicker.platform.getDirectoryPath();
+      final String? directoryPath;
+      if (Platform.isAndroid) {
+        androidSelection = await _androidDirectoryPicker.pick(
+          allowedExtensions: _supportedSubtitleExtensions,
+        );
+        directoryPath = androidSelection?.path;
+      } else {
+        directoryPath = await FilePicker.platform.getDirectoryPath();
+      }
 
       if (directoryPath == null) {
         return ImportResult(
@@ -636,8 +648,10 @@ class SubtitleLibraryService {
       }
 
       totalSuccess = result['successCount'] ?? 0;
-      totalError = result['errorCount'] ?? 0;
-      totalSkipped = result['skippedCount'] ?? 0;
+      totalError =
+          (result['errorCount'] ?? 0) + (androidSelection?.errorCount ?? 0);
+      totalSkipped =
+          (result['skippedCount'] ?? 0) + (androidSelection?.skippedCount ?? 0);
 
       if (totalSuccess == 0) {
         return ImportResult(
@@ -685,6 +699,15 @@ class SubtitleLibraryService {
         success: false,
         message: '导入文件夹失败: $e',
       );
+    } finally {
+      final selection = androidSelection;
+      if (selection != null) {
+        try {
+          await _androidDirectoryPicker.release(selection.token);
+        } catch (e) {
+          _log.captureOutput('[SubtitleLibrary] 清理 Android 导入缓存失败: $e');
+        }
+      }
     }
   }
 
@@ -1143,11 +1166,26 @@ class SubtitleLibraryService {
 
   /// 删除字幕文件或文件夹
   static Future<bool> delete(String path) async {
+    var indexRefreshed = false;
     try {
       final entity = FileSystemEntity.typeSync(path);
 
       if (entity == FileSystemEntityType.file) {
         await File(path).delete();
+        try {
+          await _deleteFileRecord(path);
+        } catch (e) {
+          // The file is already gone. Reconcile only its parent directory,
+          // then retry the targeted deletion so success never leaves a stale
+          // database row behind.
+          _log.captureOutput(
+            '[SubtitleLibrary] 删除文件记录失败，尝试恢复索引: $path, 错误: $e',
+          );
+          final parentPath = FileSystemEntity.parentOf(path);
+          await _refreshDirectoriesAfterChange({parentPath});
+          indexRefreshed = true;
+          await _deleteFileRecord(path);
+        }
       } else if (entity == FileSystemEntityType.directory) {
         await Directory(path).delete(recursive: true);
       } else {
@@ -1155,13 +1193,40 @@ class SubtitleLibraryService {
       }
 
       _log.captureOutput('[SubtitleLibrary] 已删除: $path');
-      final parentPath = FileSystemEntity.parentOf(path);
-      await _refreshDirectoriesAfterChange({parentPath});
+      if (entity == FileSystemEntityType.directory) {
+        final parentPath = FileSystemEntity.parentOf(path);
+        await _refreshDirectoriesAfterChange({parentPath});
+      } else if (!indexRefreshed) {
+        _cacheUpdateController.add(null);
+      }
       return true;
     } catch (e) {
       _log.captureOutput('[SubtitleLibrary] 删除失败: $path, 错误: $e');
       return false;
     }
+  }
+
+  /// 删除单个文件后只移除对应的数据库记录，避免重扫父目录影响其他文件。
+  static Future<void> _deleteFileRecord(String filePath) async {
+    final libraryDir = await getSubtitleLibraryDirectory();
+    final libraryRoot = p.normalize(libraryDir.path);
+    final normalizedFilePath = p.normalize(filePath);
+    final relativePath = p.relative(
+      normalizedFilePath,
+      from: libraryRoot,
+    );
+
+    if (relativePath == '.' || relativePath == '..' ||
+        relativePath.startsWith('..${p.separator}')) {
+      _log.captureOutput(
+        '[SubtitleLibrary] 跳过库目录外文件的数据库清理: $filePath',
+      );
+      return;
+    }
+
+    await SubtitleDatabase.instance.deleteByRelativePath(
+      _toRelativePath(relativePath),
+    );
   }
 
   /// 重命名字幕文件或文件夹

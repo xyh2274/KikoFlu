@@ -1,10 +1,14 @@
-import 'dart:io';
+import 'dart:io' show File;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
+import '../../models/audio_tap_playlist_mode.dart';
 import '../../providers/audio_provider.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/settings_provider.dart';
+import '../../utils/l10n_extensions.dart';
 import '../../utils/local_file_url.dart';
 import '../privacy_blur_cover.dart';
 import '../../../l10n/app_localizations.dart';
@@ -18,7 +22,6 @@ class PlaylistDialog extends ConsumerWidget {
     final queueAsync = ref.watch(queueProvider);
     final currentTrack = ref.watch(currentTrackProvider);
     final authState = ref.watch(authProvider);
-    final audioState = ref.watch(audioPlayerControllerProvider);
 
     // Get current queue synchronously as fallback
     final audioService = ref.read(audioPlayerServiceProvider);
@@ -43,45 +46,18 @@ class PlaylistDialog extends ConsumerWidget {
                 padding: const EdgeInsets.all(16),
                 child: Row(
                   children: [
-                    Text(
-                      S.of(context).playlistTitle,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
+                    Expanded(
+                      child: Text(
+                        S.of(context).playlistTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                      ),
                     ),
                     const Spacer(),
-                    if (audioState.appendMode)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 4),
-                        child: Text(
-                          S.of(context).appendMode,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(
-                                color: Theme.of(context).colorScheme.primary,
-                              ),
-                        ),
-                      ),
-                    IconButton(
-                      tooltip: audioState.appendMode
-                          ? S.of(context).appendModeStatusOn
-                          : S.of(context).appendModeStatusOff,
-                      icon: Icon(
-                        Icons.playlist_add,
-                        color: audioState.appendMode
-                            ? Theme.of(context).colorScheme.primary
-                            : null,
-                      ),
-                      onPressed: () async {
-                        final notifier =
-                            ref.read(audioPlayerControllerProvider.notifier);
-                        final shouldShowHint = notifier.toggleAppendMode();
-                        if (shouldShowHint && context.mounted) {
-                          await _showAppendHintDialog(context);
-                        }
-                      },
-                    ),
+                    const PlaylistModeToggle(),
                     IconButton(
                       icon: const Icon(Icons.close),
                       onPressed: () => Navigator.of(context).pop(),
@@ -354,26 +330,51 @@ class PlaylistDialog extends ConsumerWidget {
   static void show(BuildContext context) {
     showDialog(
       context: context,
-      barrierDismissible: !Platform.isIOS,
       builder: (context) => const PlaylistDialog(),
     );
   }
+}
 
-  Future<void> _showAppendHintDialog(BuildContext context) {
-    return showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(S.of(context).appendModeEnabled),
-        content: Text(
-          S.of(context).appendModeHint,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text(S.of(context).gotIt),
-          ),
-        ],
+/// Opens the queue update mode menu and shows the currently selected mode.
+class PlaylistModeToggle extends ConsumerWidget {
+  const PlaylistModeToggle({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final mode = ref.watch(audioTapPlaylistModeProvider);
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return PopupMenuButton<AudioTapPlaylistMode>(
+      tooltip:
+          '${S.of(context).audioTapPlaylistMode}: ${mode.localizedName(context)}',
+      initialValue: mode,
+      icon: Icon(
+        _modeIcon(mode),
+        color: mode == AudioTapPlaylistMode.replaceQueue
+            ? null
+            : colorScheme.primary,
       ),
+      onSelected: (nextMode) {
+        ref
+            .read(audioTapPlaylistModeProvider.notifier)
+            .updateMode(nextMode);
+      },
+      itemBuilder: (context) => [
+        for (final option in AudioTapPlaylistMode.values)
+          CheckedPopupMenuItem(
+            value: option,
+            checked: option == mode,
+            child: Text(option.localizedName(context)),
+          ),
+      ],
     );
+  }
+
+  static IconData _modeIcon(AudioTapPlaylistMode mode) {
+    return switch (mode) {
+      AudioTapPlaylistMode.replaceQueue => Icons.playlist_play,
+      AudioTapPlaylistMode.appendDirectory => Icons.playlist_add,
+      AudioTapPlaylistMode.appendSingle => Icons.queue_music,
+    };
   }
 }

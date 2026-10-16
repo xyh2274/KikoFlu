@@ -45,6 +45,7 @@ class OfflineLocalFileScanner {
       parentPath: '',
       knownRelativePaths: knownRelativePaths,
     );
+    FileTreeUtils.sortItemsByTitle(files);
 
     // 按标题自然排序（01, 02, ... 010, 011），与在线文件列表顺序保持一致
     FileTreeUtils.sortNatural(files);

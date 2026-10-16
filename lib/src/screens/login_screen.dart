@@ -3,21 +3,24 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/auth_provider.dart';
+import '../providers/proxy_provider.dart';
 import '../services/kikoeru_api_service.dart';
-import '../services/network_proxy_service.dart';
 import '../utils/server_utils.dart';
 import '../utils/snackbar_util.dart';
+import '../utils/l10n_extensions.dart';
 import '../../l10n/app_localizations.dart';
+import '../services/proxy_config.dart';
+import '../widgets/responsive_dialog.dart';
+import '../widgets/radio_option_group.dart';
+import '../widgets/settings_option_dialog.dart';
 import '../widgets/scrollable_appbar.dart';
+import '../widgets/confirmation_dialog.dart';
 import 'main_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   final bool isAddingAccount; // true when adding from account management
 
-  const LoginScreen({
-    super.key,
-    this.isAddingAccount = false,
-  });
+  const LoginScreen({super.key, this.isAddingAccount = false});
 
   @override
   ConsumerState<LoginScreen> createState() => _LoginScreenState();
@@ -63,10 +66,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   final _serverCookieController = TextEditingController();
+  final _proxyController = TextEditingController();
+  final _proxyFocusNode = FocusNode();
 
   bool _isLogin = true; // true for login, false for register
   bool _obscurePassword = true;
   bool _isLoading = false;
+  String? _proxyErrorText;
   late final List<String> _hostOptions;
   String _hostValue = '';
   final Map<String, _LatencyResult> _latencyResults = {};
@@ -78,6 +84,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
     final defaultHost = _normalizedHostString(KikoeruApiService.remoteHost);
     _hostValue = defaultHost;
+    _proxyController.text = ref.read(proxySettingsProvider).address;
+    _proxyFocusNode.addListener(_handleProxyFocusChanged);
   }
 
   @override
@@ -85,6 +93,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     _usernameController.dispose();
     _passwordController.dispose();
     _serverCookieController.dispose();
+    _proxyController.dispose();
+    _proxyFocusNode
+      ..removeListener(_handleProxyFocusChanged)
+      ..dispose();
     super.dispose();
   }
 
@@ -92,6 +104,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (!_formKey.currentState!.validate()) {
       return;
     }
+
+    if (!await _saveProxyAddress() || !mounted) return;
 
     setState(() => _isLoading = true);
 
@@ -130,7 +144,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           // Adding account mode - just go back
           Navigator.pop(context, true);
           SnackBarUtil.showSuccess(
-              context, S.of(context).accountAdded(username));
+            context,
+            S.of(context).accountAdded(username),
+          );
         } else {
           // Normal login - go to main screen
           Navigator.of(context).pushAndRemoveUntil(
@@ -171,32 +187,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
 
     // 显示二次确认对话框
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text(S.of(context).guestModeTitle),
-          content: Text(
-            S.of(context).guestModeMessage,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: Text(S.of(context).cancel),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: Text(S.of(context).continueGuestMode),
-            ),
-          ],
-        );
-      },
+      title: S.of(context).guestModeTitle,
+      content: Text(S.of(context).guestModeMessage),
+      confirmLabel: S.of(context).continueGuestMode,
+      variant: ConfirmationDialogVariant.warning,
     );
 
     // 用户取消了操作
-    if (confirmed != true) {
+    if (!confirmed) {
       return;
     }
+
+    if (!await _saveProxyAddress() || !mounted) return;
 
     setState(() => _isLoading = true);
 
@@ -275,6 +279,153 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     _hostOptions = options;
   }
 
+  Future<void> _showAdvancedSettings() async {
+    var proxyMode = ref.read(proxySettingsProvider).mode;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          Future<void> closeDialog() async {
+            _proxyFocusNode.unfocus();
+            final accepted = await _saveProxyAddress();
+            if (!dialogContext.mounted) return;
+            if (accepted) {
+              Navigator.of(dialogContext).pop();
+            } else {
+              setDialogState(() {});
+            }
+          }
+
+          final colorScheme = Theme.of(context).colorScheme;
+
+          return ResponsiveDialog(
+            maxWidth: 520,
+            titlePadding: const EdgeInsets.fromLTRB(20, 14, 8, 0),
+            contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            title: Row(
+              children: [
+                Icon(Icons.tune, size: 22, color: colorScheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    S.of(context).loginAdvancedSettings,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: closeDialog,
+                  icon: const Icon(Icons.close),
+                  tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                CompactRadioOptionGroup<ProxyMode>(
+                  groupValue: proxyMode,
+                  options: [
+                    for (final mode in ProxyMode.values)
+                      RadioOption(
+                        value: mode,
+                        title: Text(mode.localizedName(context)),
+                        subtitle: Text(mode.localizedDescription(context)),
+                      ),
+                  ],
+                  onChanged: (value) async {
+                    if (proxyMode == ProxyMode.manual) {
+                      await _saveProxyAddress();
+                    }
+                    if (!mounted || !dialogContext.mounted) return;
+                    await ref
+                        .read(proxySettingsProvider.notifier)
+                        .setMode(value);
+                    if (!dialogContext.mounted) return;
+                    setDialogState(() => proxyMode = value);
+                  },
+                ),
+                if (proxyMode == ProxyMode.manual) ...[
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _proxyController,
+                    focusNode: _proxyFocusNode,
+                    keyboardType: TextInputType.url,
+                    textInputAction: TextInputAction.done,
+                    decoration: settingsDialogInputDecoration(
+                      context,
+                      labelText: S.of(context).proxyAddress,
+                      hintText: '127.0.0.1:7890',
+                      helperText: S.of(context).proxyAddressFormat,
+                      errorText: _proxyErrorText,
+                      prefixIcon: const Icon(Icons.dns_outlined),
+                    ),
+                    onChanged: (_) {
+                      if (_proxyErrorText == null) return;
+                      setState(() => _proxyErrorText = null);
+                      setDialogState(() {});
+                    },
+                    onSubmitted: (_) async {
+                      await _saveProxyAddress();
+                      if (!dialogContext.mounted) return;
+                      setDialogState(() {});
+                    },
+                    onTapOutside: (_) async {
+                      _proxyFocusNode.unfocus();
+                      await _saveProxyAddress();
+                      if (!dialogContext.mounted) return;
+                      setDialogState(() {});
+                    },
+                  ),
+                ],
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _serverCookieController,
+                  decoration: settingsDialogInputDecoration(
+                    context,
+                    labelText: 'Cookie',
+                    prefixIcon: const Icon(Icons.security_outlined),
+                  ),
+                  textInputAction: TextInputAction.done,
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+    if (!mounted) return;
+    await _saveProxyAddress();
+  }
+
+  void _handleProxyFocusChanged() {
+    if (!_proxyFocusNode.hasFocus) {
+      _saveProxyAddress();
+    }
+  }
+
+  Future<bool> _saveProxyAddress() async {
+    if (ref.read(proxySettingsProvider).mode != ProxyMode.manual) return true;
+    final accepted = await ref
+        .read(proxySettingsProvider.notifier)
+        .setAddress(_proxyController.text);
+    if (!mounted) return accepted;
+    if (!accepted) {
+      setState(() => _proxyErrorText = S.of(context).invalidProxyAddress);
+      return false;
+    }
+    final normalized = ref.read(proxySettingsProvider).address;
+    if (!_proxyFocusNode.hasFocus && _proxyController.text != normalized) {
+      _proxyController.text = normalized;
+    }
+    if (_proxyErrorText != null) {
+      setState(() => _proxyErrorText = null);
+    }
+    return true;
+  }
+
   Widget _buildHostLatencyActions(BuildContext context) {
     final normalized = _normalizedHostString(_hostValue);
     final serverCookie = _serverCookieController.text.trim();
@@ -307,14 +458,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 )
               : const Icon(Icons.network_ping_outlined),
           label: Text(
-              isTesting ? S.of(context).testing : S.of(context).testConnection),
+            isTesting ? S.of(context).testing : S.of(context).testConnection,
+          ),
         ),
         const SizedBox(width: 8),
         Expanded(
           child: Text(
             statusText,
-            style:
-                Theme.of(context).textTheme.bodySmall?.copyWith(color: color),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: color),
             textAlign: TextAlign.right,
           ),
         ),
@@ -342,8 +495,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           sendTimeout: const Duration(seconds: 5),
         ),
       );
-      // 若配置了网络代理（如宿主机 Clash 7897），应用到测试连接
-      NetworkProxyService.applyProxy(dio);
+      // 代理由全局 KikoFluHttpOverrides 统一处理，无需在此单独应用
 
       final trimmedHost = host.trim();
       String baseUrl;
@@ -411,8 +563,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
   }
 
-  String _describeLatencyResult(_LatencyResult? result,
-      {bool includePlaceholder = false}) {
+  String _describeLatencyResult(
+    _LatencyResult? result, {
+    bool includePlaceholder = false,
+  }) {
     final s = S.of(context);
     if (result == null) {
       return includePlaceholder ? s.notTestedYet : '';
@@ -466,10 +620,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     return '${message.substring(0, maxLength)}...';
   }
 
-  // 配置网络代理（服务器被墙时走宿主机代理，如 10.0.2.2:7897）
+  // 配置网络代理（服务器被墙时走宿主机代理，如 10.0.2.2:7897）。
+  // 采用官方 ProxyConfig：非空地址保存为手动代理，留空恢复跟随系统。
   Future<void> _configureNetworkProxy() async {
-    final controller =
-        TextEditingController(text: NetworkProxyService.proxyConfig);
+    final controller = TextEditingController(
+      text: ProxyConfig.mode == ProxyMode.manual ? ProxyConfig.address : '',
+    );
     final result = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -481,7 +637,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             const Text(
               '服务器需要代理访问时配置，格式 host:port。'
               'MuMu 模拟器访问宿主机代理填 10.0.2.2:7897，'
-              '真机填宿主机局域网 IP:7897。留空则直连。',
+              '真机填宿主机局域网 IP:7897。留空则跟随系统代理。',
               style: TextStyle(fontSize: 13),
             ),
             const SizedBox(height: 12),
@@ -513,12 +669,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (result == null || !mounted) return;
 
     final trimmed = result.trim();
-    if (trimmed.isNotEmpty && NetworkProxyService.parseProxy(trimmed) == null) {
+    if (trimmed.isNotEmpty && ProxyConfig.normalizeAddress(trimmed) == null) {
       SnackBarUtil.showError(context, '代理格式无效，应为 host:port');
       return;
     }
 
-    await NetworkProxyService.setProxyConfig(trimmed);
+    await ProxyConfig.saveMode(
+      trimmed.isEmpty ? ProxyMode.system : ProxyMode.manual,
+      trimmed,
+    );
     if (!mounted) return;
     SnackBarUtil.showSuccess(context, '代理已保存，点「测试连接」验证');
   }
@@ -527,24 +686,52 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
+    final title = Text(
+      widget.isAddingAccount
+          ? (_isLogin
+                ? S.of(context).addAccount
+                : S.of(context).registerAccount)
+          : (_isLogin ? S.of(context).login : S.of(context).register),
+    );
 
     return Scaffold(
       appBar: ScrollableAppBar(
-        title: Text(widget.isAddingAccount
-            ? (_isLogin
-                ? S.of(context).addAccount
-                : S.of(context).registerAccount)
-            : (_isLogin ? S.of(context).login : S.of(context).register)),
-        centerTitle: true,
-        // Show back button in adding account mode
-        automaticallyImplyLeading: widget.isAddingAccount,
+        title: isLandscape ? null : title,
+        centerTitle: !isLandscape,
+        flexibleSpace: isLandscape
+            ? SafeArea(
+                bottom: false,
+                child: Row(
+                  children: [
+                    const Expanded(flex: 2, child: SizedBox.shrink()),
+                    Expanded(
+                      flex: 3,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 32),
+                        child: Center(child: title),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            : null,
         actions: [
           IconButton(
             icon: const Icon(Icons.vpn_key),
             tooltip: '网络代理',
             onPressed: _configureNetworkProxy,
           ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: TextButton.icon(
+              onPressed: _showAdvancedSettings,
+              icon: const Icon(Icons.tune, size: 20),
+              label: Text(S.of(context).loginAdvancedSettings),
+            ),
+          ),
         ],
+        // Show back button in adding account mode
+        automaticallyImplyLeading: widget.isAddingAccount,
       ),
       body: SafeArea(
         child: isLandscape ? _buildLandscapeLayout() : _buildPortraitLayout(),
@@ -586,11 +773,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     const SizedBox(height: 8),
                     Text(
                       'KikoFlu',
-                      style:
-                          Theme.of(context).textTheme.headlineMedium?.copyWith(
-                                color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.bold,
-                              ),
+                      style: Theme.of(context).textTheme.headlineMedium
+                          ?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
                     ),
                   ],
                 ),
@@ -634,9 +821,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   Text(
                     'KikoFlu',
                     style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                          color: Theme.of(context).colorScheme.primary,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      color: Theme.of(context).colorScheme.primary,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ],
               ),
@@ -728,36 +915,32 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           // 始终显示所有推荐选项
           return _hostOptions;
         },
-        fieldViewBuilder: (
-          context,
-          textEditingController,
-          focusNode,
-          onFieldSubmitted,
-        ) {
-          return TextFormField(
-            controller: textEditingController,
-            focusNode: focusNode,
-            decoration: InputDecoration(
-              labelText: S.of(context).serverAddress,
-              prefixIcon: const Icon(Icons.dns),
-              border: const OutlineInputBorder(),
-            ),
-            keyboardType: TextInputType.url,
-            onChanged: (value) {
-              setState(() {
-                _hostValue = value;
-              });
+        fieldViewBuilder:
+            (context, textEditingController, focusNode, onFieldSubmitted) {
+              return TextFormField(
+                controller: textEditingController,
+                focusNode: focusNode,
+                decoration: InputDecoration(
+                  labelText: S.of(context).serverAddress,
+                  prefixIcon: const Icon(Icons.dns),
+                  border: const OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.url,
+                onChanged: (value) {
+                  setState(() {
+                    _hostValue = value;
+                  });
+                },
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return S.of(context).pleaseEnterServerAddress;
+                  }
+                  return null;
+                },
+                textInputAction: TextInputAction.next,
+                onFieldSubmitted: (_) => _submit(),
+              );
             },
-            validator: (value) {
-              if (value == null || value.trim().isEmpty) {
-                return S.of(context).pleaseEnterServerAddress;
-              }
-              return null;
-            },
-            textInputAction: TextInputAction.next,
-            onFieldSubmitted: (_) => _submit(),
-          );
-        },
         onSelected: (selection) {
           setState(() {
             _hostValue = selection;
@@ -768,29 +951,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       const SizedBox(height: 8),
       _buildHostLatencyActions(context),
 
-      const SizedBox(height: 15),
-
-      // Cookie field (collapsible)
-      ExpansionTile(
-        title: const Text('Cookie'),
-        children: [
-          TextFormField(
-            controller: _serverCookieController,
-            decoration: InputDecoration(
-              labelText: S.of(context).serverCookie,
-              prefixIcon: const Icon(Icons.security),
-              border: const OutlineInputBorder(),
-              helperText: 'Server Cookie',
-            ),
-            textInputAction: TextInputAction.done,
-          ),
-          const SizedBox(height: 16),
-        ],
-      ),
+      const SizedBox(height: 12),
 
       // Submit button
       FilledButton(
         onPressed: _isLoading ? null : _submit,
+        style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52)),
         child: _isLoading
             ? const SizedBox(
                 height: 20,
@@ -810,6 +976,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           label: Text(S.of(context).guestMode),
           style: OutlinedButton.styleFrom(
             foregroundColor: Theme.of(context).colorScheme.secondary,
+            minimumSize: const Size.fromHeight(52),
           ),
         ),
 
@@ -822,9 +989,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           _isLogin
               ? S.of(context).noAccountTapToRegister
               : S.of(context).haveAccountTapToLogin,
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.primary,
-          ),
+          style: TextStyle(color: Theme.of(context).colorScheme.primary),
         ),
       ),
     ];

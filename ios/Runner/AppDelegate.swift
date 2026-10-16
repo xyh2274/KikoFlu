@@ -1,6 +1,8 @@
 import Flutter
 import UIKit
 import AVKit
+import CoreImage
+import CFNetwork
 import AudioToolbox
 import CoreHaptics
 
@@ -32,9 +34,66 @@ import CoreHaptics
         result(FlutterMethodNotImplemented)
       }
     }
+
+    let systemProxyChannel = FlutterMethodChannel(
+      name: "com.meteor.kikoeruflutter/system_proxy",
+      binaryMessenger: controller.binaryMessenger
+    )
+    systemProxyChannel.setMethodCallHandler { [weak self] call, result in
+      guard let self else {
+        result(FlutterError(code: "unavailable", message: nil, details: nil))
+        return
+      }
+      switch call.method {
+      case "getSystemProxy":
+        result(self.systemProxy())
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
     
     GeneratedPluginRegistrant.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  private func systemProxy() -> String? {
+    guard let settings = CFNetworkCopySystemProxySettings()?.takeUnretainedValue()
+      as NSDictionary? else {
+      return nil
+    }
+
+    var entries: [String] = []
+    // iOS exposes the HTTP proxy keys here; Dart uses this entry as the
+    // HTTPS fallback as well. The HTTPS-specific keys are macOS-only.
+    appendProxy(
+      to: &entries,
+      settings: settings,
+      hostKey: kCFNetworkProxiesHTTPProxy,
+      portKey: kCFNetworkProxiesHTTPPort,
+      enabledKey: kCFNetworkProxiesHTTPEnable,
+      scheme: "http"
+    )
+    return entries.isEmpty ? nil : entries.joined(separator: ";")
+  }
+
+  private func appendProxy(
+    to entries: inout [String],
+    settings: NSDictionary,
+    hostKey: CFString,
+    portKey: CFString,
+    enabledKey: CFString,
+    scheme: String
+  ) {
+    if let enabled = settings[enabledKey] as? NSNumber, !enabled.boolValue {
+      return
+    }
+    guard let host = settings[hostKey] as? String,
+          let port = (settings[portKey] as? NSNumber)?.intValue,
+          !host.isEmpty,
+          port > 0 else {
+      return
+    }
+    entries.append("\(scheme)=\(host):\(port)")
   }
 }
 
@@ -910,393 +969,1614 @@ class FPSMonitor {
     }
 }
 
+@available(iOS 15.0, *)
+private final class FloatingLyricSampleBufferPlaybackDelegate: NSObject,
+    AVPictureInPictureSampleBufferPlaybackDelegate {
+    weak var manager: FloatingLyricManager?
+
+    init(manager: FloatingLyricManager) {
+        self.manager = manager
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        setPlaying playing: Bool
+    ) {
+        if playing {
+            manager?.refreshSampleBufferFrame()
+        }
+    }
+
+    func pictureInPictureControllerTimeRangeForPlayback(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) -> CMTimeRange {
+        CMTimeRange(start: .zero, duration: .positiveInfinity)
+    }
+
+    func pictureInPictureControllerIsPlaybackPaused(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) -> Bool {
+        false
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        didTransitionToRenderSize newRenderSize: CMVideoDimensions
+    ) {
+        manager?.refreshSampleBufferFrame()
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        skipByInterval skipInterval: CMTime,
+        completion: @escaping () -> Void
+    ) {
+        completion()
+    }
+}
+
 class FloatingLyricManager: NSObject, AVPictureInPictureControllerDelegate {
     private var pipController: AVPictureInPictureController?
+    private var pipPossibleObservation: NSKeyValueObservation?
+    private var playerItemStatusObservation: NSKeyValueObservation?
+    private var playerLayerReadyObservation: NSKeyValueObservation?
+    private var sampleBufferStatusObservation: NSKeyValueObservation?
+    private var sampleBufferReadyObservation: NSKeyValueObservation?
     private var playerLayer: AVPlayerLayer?
     private var player: AVPlayer?
-    private var lyricView: UILabel?
-    private var fpsLabel: UILabel?
-    private var networkSpeedLabel: UILabel?
+    private var videoComposition: AVMutableVideoComposition?
+    private var sampleBufferDisplayLayer: AVSampleBufferDisplayLayer?
+    private var sampleBufferPlaybackDelegate: AnyObject?
+    private weak var hostView: UIView?
     private var channel: FlutterMethodChannel
-    
+
     private var fpsMonitor = FPSMonitor()
     private var networkSpeedMonitor = NetworkSpeedMonitor()
     private var showFPS: Bool = false
     private var showNetworkSpeed: Bool = false
-    
-    // Cached subtitle style for info labels (follows lyric style except font size)
+    private var currentFPS: Int?
+    private var currentNetworkSpeed: String?
+
+    private var currentText = "♪ - ♪"
+    private var lyricFontSize: CGFloat = 14
+    private var lyricTextColor: UIColor = .white
+    private var lyricBackgroundColor = UIColor(red: 0.13, green: 0.59, blue: 0.95, alpha: 0.88)
+    private var lyricCornerRadius: CGFloat = 16
+    private var lyricPaddingHorizontal: CGFloat = 20
+    private var lyricPaddingVertical: CGFloat = 10
     private var infoTextColor: UIColor = .white
-    private var infoCornerRadius: CGFloat = 4
+    private let logicalFrameSize = CGSize(width: 414, height: 104)
+    private let outputFrameRate: Int32 = 30
+    private var renderSize = CGSize(width: 828, height: 208)
+    private var renderScale: CGFloat = 2
+    private var renderInputLogicalWidth: CGFloat = 414
+    private var renderInputNativeScale: CGFloat = 2
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private let renderedFrameLock = NSLock()
+    private var renderedFrame: CGImage?
+    private var renderedCIImage: CIImage?
+    private var renderedFrameGeneration = 0
+    private var compositionFrameCount = 0
+    private var didLogFirstCompositionFrame = false
+    private var sampleBufferEnqueueCount = 0
+    private let sampleBufferHeartbeatInterval: TimeInterval = 0.25
+    private var sampleBufferHeartbeatTimer: Timer?
+    private var sampleBufferHeartbeatEnqueueCount = 0
+    private var sampleBufferLastEnqueueUptime: TimeInterval?
+    private var sampleBufferMaximumEnqueueGapMilliseconds = 0
+    private var sampleBufferPixelBuffer: CVPixelBuffer?
+    private var sampleBufferFormatDescription: CMVideoFormatDescription?
+    private var sampleBufferFrameGeneration = -1
+    private var sampleBufferCreationFailureCount = 0
+    private var didLogSampleBufferCreationFailure = false
+    private var sampleBufferLastCreationFailureStage: String?
+    private var sampleBufferLastCreationFailureStatus: Int32?
+    private var didLogSampleBufferFlushAfterFailure = false
+    private var didAttemptSampleBufferFailureReset = false
+    private var didLogSampleBufferResetFailure = false
+    private var sampleBufferResetInProgress = false
+    private var didLogSampleBufferFrameContent = false
+    private var sampleBufferLastPresentationTime: CMTime?
+    private var sampleBufferNonMonotonicTimestampCount = 0
+    private var sampleBufferFrameContentDetails: [String: Any]?
+    private var pictureInPictureStartUptime: TimeInterval?
+    private var stopRequestedByApp = false
+    private var setupFailure: String?
+    private var pendingShowResult: FlutterResult?
+    private var startGeneration = 0
+    private var startRequestedGeneration: Int?
     
     // Base64 of a 1-second black MP4 video
     private let dummyVideoBase64 = "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAzxtZGF0AAACnwYF//+b3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjUgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0xIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDM6MHgxMTMgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTEgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz0zIGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MyBiX3B5cmFtaWQ9MiBiX2FkYXB0PTEgYl9iaWFzPTAgZGlyZWN0PTEgd2VpZ2h0Yj0xIG9wZW5fZ29wPTAgd2VpZ2h0cD0yIGtleWludD0yNTAga2V5aW50X21pbj0xIHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAbmWIhAAX//731LfMsu4HIrYLqPeiniZfQ3UlAZuWxO06gAAAAwH59sMvUJl+D/6JZYfSbX+N2G0zTmpT8MS5Z28oYXk80p7dd2r0R/+AAe9UAACvQpMjU6B8PVjHQ4Eclp5iBuAWr7bKk+fDOdstAAAADUGaImxBX/7WpVAAJmAAAAAKAZ5BeQV/AAAZ8QAAA1Ntb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAPoAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACfnRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAPoAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAABngAAAGgAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAD6AAAIAAAAEAAAAAAfZtZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAAEAAAAFAAFXEAAAAAAAxaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAAAENvcmUgTWVkaWEgVmlkZW8AAAABnW1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAV1zdGJsAAAAsXN0c2QAAAAAAAAAAQAAAKFhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAZ4AaABIAAAASAAAAAAAAAABFUxhdmM2Mi4xNi4xMDAgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAAN2F2Y0MBZAAL/+EAGmdkAAus2UGj+pYpQAAAAwBAAAADAIPFCmWAAQAGaOvjyyLA/fj4AAAAABRidHJ0AAAAAAAACIoAAAAAAAAAGHN0dHMAAAAAAAAAAQAAAAMAAEAAAAAAFHN0c3MAAAAAAAAAAQAAAAEAAAAoY3R0cwAAAAAAAAADAAAAAQAAgAAAAAABAADAAAAAAAEAAEAAAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAADAAAAAQAAACBzdHN6AAAAAAAAAAAAAAADAAADFQAAABEAAAAOAAAAFHN0Y28AAAAAAAAAAQAAADAAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYyLjYuMTAx"
 
     init(controller: FlutterViewController) {
-        channel = FlutterMethodChannel(name: "com.kikoeru.flutter/floating_lyric", binaryMessenger: controller.binaryMessenger)
+        channel = FlutterMethodChannel(
+            name: "com.kikoeru.flutter/floating_lyric",
+            binaryMessenger: controller.binaryMessenger
+        )
         super.init()
-        
-        channel.setMethodCallHandler { [weak self] (call, result) in
+
+        channel.setMethodCallHandler { [weak self] call, result in
             self?.handleMethodCall(call, result: result)
         }
-        
-        setupAudioSession()
-        setupPlayer(in: controller.view)
+
+        hostView = controller.view
+        updateRenderMetrics(for: controller.view)
+        rebuildRenderedFrame()
+        setupPictureInPicture(in: controller.view)
     }
-    
-    private func setupAudioSession() {
-        do {
-            // Use .playback category with .mixWithOthers option to allow background audio from other apps (or our own main player)
-            // However, for PiP to work, we generally need to be the "active" audio session or at least compatible.
-            // Since we have a main audio player in Flutter (just_audio), we need to be careful not to interrupt it.
-            // The main player likely sets the category to .playback.
-            // We should try to use the existing session configuration or ensure we don't conflict.
-            
-            // Actually, for PiP to work, the AVPlayerLayer must be attached to a player that is "playing".
-            // If we set .mixWithOthers, it might help with not pausing the main audio.
-            try AVAudioSession.sharedInstance().setCategory(.playback, options: .mixWithOthers)
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("Audio session setup failed: \(error)")
+
+    deinit {
+        sampleBufferHeartbeatTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func updateRenderMetrics(for view: UIView?) {
+        guard let view else { return }
+        let screen = view.window?.screen ?? UIScreen.main
+        let logicalWidth = view.bounds.width > 0
+            ? view.bounds.width
+            : screen.bounds.width
+        let nativeScale = screen.nativeScale > 0 ? screen.nativeScale : screen.scale
+        let physicalWidth = logicalWidth * nativeScale
+        let minimumWidth = logicalFrameSize.width * 2
+        let maximumWidth = logicalFrameSize.width * 4
+        let preferredWidth = physicalWidth * 0.5
+        let outputWidth = evenPixelValue(
+            min(max(preferredWidth, minimumWidth), maximumWidth)
+        )
+        let scale = outputWidth / logicalFrameSize.width
+        let outputHeight = evenPixelValue(logicalFrameSize.height * scale)
+
+        renderInputLogicalWidth = logicalWidth
+        renderInputNativeScale = nativeScale
+        renderScale = scale
+        renderSize = CGSize(width: outputWidth, height: outputHeight)
+
+        updateSampleBufferDisplayLayerGeometry()
+
+        if let videoComposition {
+            videoComposition.renderSize = renderSize
+            videoComposition.frameDuration = CMTime(value: 1, timescale: outputFrameRate)
+            player?.currentItem?.videoComposition = videoComposition
         }
     }
-    
-    private func setupPlayer(in view: UIView) {
-        guard let data = Data(base64Encoded: dummyVideoBase64) else { return }
-        let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent("pip_video.mp4")
-        try? data.write(to: fileURL)
-        
-        let playerItem = AVPlayerItem(url: fileURL)
-        player = AVPlayer(playerItem: playerItem)
+
+    private func evenPixelValue(_ value: CGFloat) -> CGFloat {
+        CGFloat(max(2, Int(value.rounded()) / 2 * 2))
+    }
+
+    private func setupPictureInPicture(in view: UIView) {
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            setupFailure = "picture_in_picture_unsupported"
+            return
+        }
+
+        if #available(iOS 15.0, *) {
+            setupSampleBufferPictureInPicture(in: view)
+        } else {
+            setupLegacyPictureInPicture(in: view)
+        }
+    }
+
+    @available(iOS 15.0, *)
+    private func setupSampleBufferPictureInPicture(in view: UIView) {
+        let displayLayer = AVSampleBufferDisplayLayer()
+        displayLayer.opacity = 1
+        displayLayer.backgroundColor = UIColor.black.cgColor
+        displayLayer.videoGravity = .resizeAspect
+        sampleBufferDisplayLayer = displayLayer
+        updateSampleBufferDisplayLayerGeometry()
+        attachSampleBufferDisplayLayer(below: view)
+
+        let playbackDelegate = FloatingLyricSampleBufferPlaybackDelegate(manager: self)
+        sampleBufferPlaybackDelegate = playbackDelegate
+        let contentSource = AVPictureInPictureController.ContentSource(
+            sampleBufferDisplayLayer: displayLayer,
+            playbackDelegate: playbackDelegate
+        )
+        pipController = AVPictureInPictureController(contentSource: contentSource)
+        pipController?.delegate = self
+        pipController?.requiresLinearPlayback = true
+        pipController?.setValue(1, forKey: "controlsStyle")
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(sampleBufferDisplayLayerFailedToDecode(notification:)),
+            name: .AVSampleBufferDisplayLayerFailedToDecode,
+            object: displayLayer
+        )
+        observeSampleBufferState(displayLayer)
+        observePictureInPicturePossibility()
+        enqueueCurrentSampleBuffer(reason: "setup")
+        if pipController == nil {
+            setupFailure = "sample_buffer_pip_controller_creation_failed"
+        }
+    }
+
+    private func updateSampleBufferDisplayLayerGeometry() {
+        guard let displayLayer = sampleBufferDisplayLayer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        displayLayer.bounds = CGRect(origin: .zero, size: logicalFrameSize)
+        displayLayer.position = CGPoint(
+            x: logicalFrameSize.width / 2,
+            y: logicalFrameSize.height / 2
+        )
+        displayLayer.contentsScale = renderScale
+        CATransaction.commit()
+    }
+
+    private func attachSampleBufferDisplayLayer(below view: UIView) {
+        guard let displayLayer = sampleBufferDisplayLayer,
+              let parentLayer = view.layer.superlayer else {
+            return
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        displayLayer.removeFromSuperlayer()
+        parentLayer.insertSublayer(displayLayer, below: view.layer)
+        CATransaction.commit()
+    }
+
+    private func setupLegacyPictureInPicture(in view: UIView) {
+        guard let data = Data(base64Encoded: dummyVideoBase64) else {
+            setupFailure = "dummy_video_decode_failed"
+            return
+        }
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pip_video.mp4")
+        do {
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            setupFailure = "dummy_video_write_failed: \(error.localizedDescription)"
+            return
+        }
+
+        let asset = AVURLAsset(url: fileURL)
+        let item = AVPlayerItem(asset: asset)
+        item.preferredForwardBufferDuration = 0
+        let composition = AVMutableVideoComposition(
+            asset: asset,
+            applyingCIFiltersWithHandler: { [weak self] request in
+                guard let self, let overlay = self.currentRenderedCIImage() else {
+                    request.finish(with: request.sourceImage, context: nil)
+                    return
+                }
+                let sourceExtent = request.sourceImage.extent
+                let outputExtent = CGRect(origin: .zero, size: request.renderSize)
+                let scaledOverlay = overlay.transformed(by: CGAffineTransform(
+                    scaleX: outputExtent.width / overlay.extent.width,
+                    y: outputExtent.height / overlay.extent.height
+                ))
+                let output = scaledOverlay.transformed(by: CGAffineTransform(
+                    translationX: outputExtent.minX - scaledOverlay.extent.minX,
+                    y: outputExtent.minY - scaledOverlay.extent.minY
+                )).cropped(to: outputExtent)
+                request.finish(with: output, context: nil)
+                self.recordCompositionFrame(
+                    sourceSize: sourceExtent.size,
+                    outputSize: output.extent.size
+                )
+            }
+        )
+        composition.renderSize = renderSize
+        composition.frameDuration = CMTime(value: 1, timescale: outputFrameRate)
+        videoComposition = composition
+        item.videoComposition = composition
+        player = AVPlayer(playerItem: item)
         player?.isMuted = true
         player?.allowsExternalPlayback = true
-        // Important: prevent this player from pausing other audio
-        if #available(iOS 10.0, *) {
-            player?.automaticallyWaitsToMinimizeStalling = false
-        }
-        // Loop the video
+        player?.automaticallyWaitsToMinimizeStalling = false
         player?.actionAtItemEnd = .none
-        NotificationCenter.default.addObserver(self,
-                                             selector: #selector(playerItemDidReachEnd(notification:)),
-                                             name: .AVPlayerItemDidPlayToEndTime,
-                                             object: player?.currentItem)
-        
-        playerLayer = AVPlayerLayer(player: player)
-        playerLayer?.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
-        playerLayer?.opacity = 0.01
-        view.layer.addSublayer(playerLayer!)
-        
-        if AVPictureInPictureController.isPictureInPictureSupported() {
-            pipController = AVPictureInPictureController(playerLayer: playerLayer!)
-            pipController?.delegate = self
-            // Hide controls
-            pipController?.setValue(1, forKey: "controlsStyle")
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(playerItemDidReachEnd(notification:)),
+            name: .AVPlayerItemDidPlayToEndTime,
+            object: item
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(playerItemFailedToPlayToEnd(notification:)),
+            name: .AVPlayerItemFailedToPlayToEndTime,
+            object: item
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(playerItemNewErrorLogEntry(notification:)),
+            name: .AVPlayerItemNewErrorLogEntry,
+            object: item
+        )
+
+        let layer = AVPlayerLayer(player: player)
+        layer.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        layer.opacity = 0.01
+        view.layer.addSublayer(layer)
+        playerLayer = layer
+        pipController = AVPictureInPictureController(playerLayer: layer)
+        pipController?.delegate = self
+        pipController?.setValue(1, forKey: "controlsStyle")
+        observePlayerState(item: item, layer: layer)
+        observePictureInPicturePossibility()
+        if pipController == nil {
+            setupFailure = "picture_in_picture_controller_creation_failed"
         }
     }
-    
-    @objc func playerItemDidReachEnd(notification: Notification) {
-        if let playerItem = notification.object as? AVPlayerItem {
-            playerItem.seek(to: CMTime.zero, completionHandler: nil)
+
+    @available(iOS 15.0, *)
+    private func observeSampleBufferState(_ displayLayer: AVSampleBufferDisplayLayer) {
+        if #available(iOS 17.0, *) {
+            let renderer = displayLayer.sampleBufferRenderer
+            sampleBufferStatusObservation = renderer.observe(\.status, options: [.new]) {
+                [weak self, weak displayLayer] renderer, _ in
+                DispatchQueue.main.async {
+                    guard let self, let displayLayer else { return }
+                    self.emitDiagnostic(
+                        "sample_buffer_status_changed",
+                        level: renderer.status == .failed ? "error" : "info",
+                        details: self.sampleBufferDetails(displayLayer)
+                    )
+                }
+            }
+        } else {
+            sampleBufferStatusObservation = displayLayer.observe(\.status, options: [.new]) {
+                [weak self, weak displayLayer] layer, _ in
+                DispatchQueue.main.async {
+                    guard let self, let displayLayer else { return }
+                    self.emitDiagnostic(
+                        "sample_buffer_status_changed",
+                        level: layer.status == .failed ? "error" : "info",
+                        details: self.sampleBufferDetails(displayLayer)
+                    )
+                }
+            }
+        }
+        if #available(iOS 17.4, *) {
+            sampleBufferReadyObservation = displayLayer.observe(
+                \.isReadyForDisplay,
+                options: [.new]
+            ) { [weak self] layer, _ in
+                DispatchQueue.main.async {
+                    self?.emitDiagnostic(
+                        "sample_buffer_ready_changed",
+                        details: ["readyForDisplay": layer.isReadyForDisplay]
+                    )
+                }
+            }
         }
     }
-    
+
+    @objc private func sampleBufferDisplayLayerFailedToDecode(notification: Notification) {
+        let error = notification.userInfo?[
+            AVSampleBufferDisplayLayerFailedToDecodeNotificationErrorKey
+        ] as? Error
+        var details = errorDetails(error)
+        if let displayLayer = notification.object as? AVSampleBufferDisplayLayer {
+            sampleBufferDetails(displayLayer).forEach { details[$0.key] = $0.value }
+        }
+        emitDiagnostic(
+            "sample_buffer_failed_to_decode",
+            level: "error",
+            details: details
+        )
+    }
+
+    private func observePictureInPicturePossibility() {
+        pipPossibleObservation = pipController?.observe(
+            \.isPictureInPicturePossible,
+            options: [.new]
+        ) { [weak self] _, change in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.emitDiagnostic(
+                    "pip_possibility_changed",
+                    details: ["possible": change.newValue == true]
+                )
+                if change.newValue == true {
+                    self.startPendingPictureInPictureIfPossible()
+                }
+            }
+        }
+    }
+
+    private func observePlayerState(item: AVPlayerItem, layer: AVPlayerLayer) {
+        playerItemStatusObservation = item.observe(\.status, options: [.new]) {
+            [weak self] item, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let level = item.status == .failed ? "error" : "info"
+                self.emitDiagnostic(
+                    "player_item_status_changed",
+                    level: level,
+                    details: self.diagnosticSnapshot()
+                )
+            }
+        }
+        playerLayerReadyObservation = layer.observe(\.isReadyForDisplay, options: [.new]) {
+            [weak self] layer, _ in
+            DispatchQueue.main.async {
+                self?.emitDiagnostic(
+                    "player_layer_ready_changed",
+                    details: ["readyForDisplay": layer.isReadyForDisplay]
+                )
+            }
+        }
+    }
+
+    @objc private func playerItemDidReachEnd(notification: Notification) {
+        guard let item = notification.object as? AVPlayerItem else { return }
+        item.seek(to: .zero) { [weak self] completed in
+            guard let self else { return }
+            if completed,
+               self.pendingShowResult != nil ||
+               self.pipController?.isPictureInPictureActive == true {
+                self.player?.play()
+            } else if !completed {
+                self.emitDiagnostic(
+                    "dummy_video_loop_seek_incomplete",
+                    level: "warning"
+                )
+            }
+        }
+    }
+
+    @objc private func playerItemFailedToPlayToEnd(notification: Notification) {
+        let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+        emitDiagnostic(
+            "player_item_failed_to_end",
+            level: "error",
+            details: errorDetails(error)
+        )
+    }
+
+    @objc private func playerItemNewErrorLogEntry(notification: Notification) {
+        guard let item = notification.object as? AVPlayerItem,
+              let event = item.errorLog()?.events.last else { return }
+        emitDiagnostic(
+            "player_item_error_log",
+            level: "warning",
+            details: [
+                "statusCode": event.errorStatusCode,
+                "domain": event.errorDomain,
+                "comment": event.errorComment ?? "",
+            ]
+        )
+    }
+
     private func handleMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "show":
             let args = call.arguments as? [String: Any]
-            let text = args?["text"] as? String ?? "Lyrics"
-            show(text: text, args: args)
-            result(true)
+            updateRenderMetrics(for: hostView)
+            currentText = args?["text"] as? String ?? "Lyrics"
+            applyStyleArguments(args)
+            rebuildRenderedFrame()
+            show(result: result)
         case "hide":
             hide()
             result(true)
         case "updateText":
             let args = call.arguments as? [String: Any]
-            let text = args?["text"] as? String ?? ""
-            updateText(text)
+            updateText(args?["text"] as? String ?? "")
             result(true)
         case "updateStyle":
-            let args = call.arguments as? [String: Any]
-            updateStyle(args: args)
+            updateStyle(args: call.arguments as? [String: Any])
             result(true)
         case "setFPSEnabled":
             let args = call.arguments as? [String: Any]
-            let enabled = args?["enabled"] as? Bool ?? false
-            setFPSEnabled(enabled)
+            setFPSEnabled(args?["enabled"] as? Bool ?? false)
             result(true)
         case "setNetworkSpeedEnabled":
             let args = call.arguments as? [String: Any]
-            let enabled = args?["enabled"] as? Bool ?? false
-            setNetworkSpeedEnabled(enabled)
+            setNetworkSpeedEnabled(args?["enabled"] as? Bool ?? false)
             result(true)
-        case "hasPermission":
-            result(true)
-        case "requestPermission":
-            result(true)
+        case "hasPermission", "requestPermission":
+            result(pipController != nil)
         default:
             result(FlutterMethodNotImplemented)
         }
     }
-    
-    private func show(text: String, args: [String: Any]?) {
-        if pipController?.isPictureInPictureActive == true {
-            updateText(text)
-            updateStyle(args: args)
+
+    private func show(result: @escaping FlutterResult) {
+        guard let pipController else {
+            emitDiagnostic(
+                "show_rejected",
+                level: "error",
+                details: ["reason": setupFailure ?? "pip_controller_unavailable"]
+            )
+            result(false)
             return
         }
-        
-        player?.play()
-        pipController?.startPictureInPicture()
-        prepareLyricView(text: text)
-        updateStyle(args: args)
+        if !pipController.isPictureInPictureActive {
+            stopRequestedByApp = false
+            pictureInPictureStartUptime = nil
+        }
+        emitDiagnostic("render_metrics_selected", details: renderMetricsDetails())
+        emitDiagnostic("show_requested", details: diagnosticSnapshot())
+        if pipController.isPictureInPictureActive {
+            emitDiagnostic("show_reused_active_pip", details: diagnosticSnapshot())
+            result(true)
+            return
+        }
+
+        stopSampleBufferHeartbeat()
+        completePendingShow(false)
+        pendingShowResult = result
+        startGeneration += 1
+        let generation = startGeneration
+        resetCompositionDiagnostics()
+        if sampleBufferDisplayLayer != nil {
+            if let hostView {
+                attachSampleBufferDisplayLayer(below: hostView)
+            }
+            enqueueCurrentSampleBuffer(reason: "show")
+            emitDiagnostic("sample_buffer_show_requested", details: diagnosticSnapshot())
+        } else {
+            player?.play()
+            emitDiagnostic("dummy_video_play_requested", details: diagnosticSnapshot())
+        }
+        startPendingPictureInPictureIfPossible()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, generation == self.startGeneration,
+                  self.pendingShowResult != nil else { return }
+            self.emitDiagnostic(
+                "pip_start_timeout",
+                level: "error",
+                details: self.diagnosticSnapshot()
+            )
+            self.stopSampleBufferHeartbeat()
+            self.player?.pause()
+            self.completePendingShow(false)
+        }
     }
-    
+
+    private func startPendingPictureInPictureIfPossible() {
+        guard pendingShowResult != nil, let pipController else { return }
+        guard pipController.isPictureInPicturePossible else {
+            emitDiagnostic("pip_start_waiting", details: diagnosticSnapshot())
+            return
+        }
+        guard startRequestedGeneration != startGeneration else { return }
+        startRequestedGeneration = startGeneration
+        emitDiagnostic("pip_start_requested", details: diagnosticSnapshot())
+        pipController.startPictureInPicture()
+    }
+
+    private func completePendingShow(_ success: Bool) {
+        guard let result = pendingShowResult else { return }
+        pendingShowResult = nil
+        startRequestedGeneration = nil
+        result(success)
+    }
+
     private func hide() {
+        stopRequestedByApp = true
+        stopSampleBufferHeartbeat()
+        emitDiagnostic("hide_requested", details: diagnosticSnapshot())
+        startGeneration += 1
+        completePendingShow(false)
         pipController?.stopPictureInPicture()
         player?.pause()
         stopMonitors()
     }
-    
+
     private func setFPSEnabled(_ enabled: Bool) {
         showFPS = enabled
-        if enabled {
+        currentFPS = nil
+        if enabled, pipController?.isPictureInPictureActive == true {
             fpsMonitor.onFPSUpdate = { [weak self] fps in
-                self?.updateFPSLabel(fps)
+                self?.updateFPS(fps)
             }
-            if pipController?.isPictureInPictureActive == true {
-                fpsMonitor.start()
-                ensureFPSLabel()
-            }
-        } else {
+            fpsMonitor.start()
+        } else if !enabled {
             fpsMonitor.stop()
-            DispatchQueue.main.async {
-                self.fpsLabel?.removeFromSuperview()
-                self.fpsLabel = nil
-            }
         }
+        rebuildRenderedFrame()
     }
-    
+
     private func setNetworkSpeedEnabled(_ enabled: Bool) {
         showNetworkSpeed = enabled
-        if enabled {
+        currentNetworkSpeed = nil
+        if enabled, pipController?.isPictureInPictureActive == true {
             networkSpeedMonitor.onSpeedUpdate = { [weak self] speed in
-                self?.updateNetworkSpeedLabel(speed)
+                self?.updateNetworkSpeed(speed)
             }
-            if pipController?.isPictureInPictureActive == true {
-                networkSpeedMonitor.start()
-                ensureNetworkSpeedLabel()
-            }
-        } else {
+            networkSpeedMonitor.start()
+        } else if !enabled {
             networkSpeedMonitor.stop()
-            DispatchQueue.main.async {
-                self.networkSpeedLabel?.removeFromSuperview()
-                self.networkSpeedLabel = nil
-            }
         }
+        rebuildRenderedFrame()
     }
-    
-    private func stopMonitors() {
-        fpsMonitor.stop()
-        networkSpeedMonitor.stop()
-    }
-    
+
     private func startMonitorsIfNeeded() {
         if showFPS {
             fpsMonitor.onFPSUpdate = { [weak self] fps in
-                self?.updateFPSLabel(fps)
+                self?.updateFPS(fps)
             }
             fpsMonitor.start()
         }
         if showNetworkSpeed {
             networkSpeedMonitor.onSpeedUpdate = { [weak self] speed in
-                self?.updateNetworkSpeedLabel(speed)
+                self?.updateNetworkSpeed(speed)
             }
             networkSpeedMonitor.start()
         }
     }
-    
-    private func ensureFPSLabel() {
+
+    private func stopMonitors() {
+        fpsMonitor.stop()
+        networkSpeedMonitor.stop()
+    }
+
+    private func updateFPS(_ fps: Int) {
         DispatchQueue.main.async {
-            guard self.showFPS else { return }
-            if self.fpsLabel == nil {
-                let label = UILabel()
-                label.textColor = self.infoTextColor.withAlphaComponent(0.8)
-                label.backgroundColor = .clear
-                label.font = UIFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
-                label.textAlignment = .center
-                label.layer.cornerRadius = self.infoCornerRadius
-                label.clipsToBounds = true
-                self.fpsLabel = label
-            }
-            if let window = UIApplication.shared.windows.first, self.fpsLabel?.superview == nil {
-                if let label = self.fpsLabel {
-                    window.addSubview(label)
-                    window.bringSubviewToFront(label)
-                    self.layoutInfoLabels(in: window)
-                }
-            }
+            self.currentFPS = fps
+            self.rebuildRenderedFrame()
         }
     }
-    
-    private func ensureNetworkSpeedLabel() {
+
+    private func updateNetworkSpeed(_ speed: String) {
         DispatchQueue.main.async {
-            guard self.showNetworkSpeed else { return }
-            if self.networkSpeedLabel == nil {
-                let label = UILabel()
-                label.textColor = self.infoTextColor.withAlphaComponent(0.8)
-                label.backgroundColor = .clear
-                label.font = UIFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
-                label.textAlignment = .center
-                label.layer.cornerRadius = self.infoCornerRadius
-                label.clipsToBounds = true
-                self.networkSpeedLabel = label
-            }
-            if let window = UIApplication.shared.windows.first, self.networkSpeedLabel?.superview == nil {
-                if let label = self.networkSpeedLabel {
-                    window.addSubview(label)
-                    window.bringSubviewToFront(label)
-                    self.layoutInfoLabels(in: window)
-                }
-            }
+            self.currentNetworkSpeed = speed
+            self.rebuildRenderedFrame()
         }
     }
-    
-    private func layoutInfoLabels(in window: UIWindow) {
-        let margin: CGFloat = 4
-        let height: CGFloat = 16
-        if let label = fpsLabel {
-            let width: CGFloat = 50
-            label.frame = CGRect(
-                x: margin,
-                y: window.bounds.height - height - margin,
-                width: width,
-                height: height
-            )
-        }
-        if let label = networkSpeedLabel {
-            let width: CGFloat = 140
-            label.frame = CGRect(
-                x: window.bounds.width - width - margin,
-                y: window.bounds.height - height - margin,
-                width: width,
-                height: height
-            )
-        }
-    }
-    
-    private func updateFPSLabel(_ fps: Int) {
-        DispatchQueue.main.async {
-            self.fpsLabel?.text = "\(fps) FPS"
-        }
-    }
-    
-    private func updateNetworkSpeedLabel(_ speed: String) {
-        DispatchQueue.main.async {
-            self.networkSpeedLabel?.text = speed
-        }
-    }
-    
+
     private func updateText(_ text: String) {
         DispatchQueue.main.async {
-            self.lyricView?.text = text
-            self.lyricView?.setNeedsLayout()
+            self.currentText = text
+            self.rebuildRenderedFrame()
         }
     }
-    
+
     private func updateStyle(args: [String: Any]?) {
-        guard let args = args else { return }
-        
+        guard let args else { return }
         DispatchQueue.main.async {
-            guard let view = self.lyricView else { return }
-            
-            if let fontSize = args["fontSize"] as? Double {
-                view.font = UIFont.systemFont(ofSize: CGFloat(fontSize), weight: .medium)
-            }
-            
-            if let textColorInt = args["textColor"] as? Int {
-                let color = self.colorFromInt(textColorInt)
-                view.textColor = color
-                self.infoTextColor = color
-            }
-            
-            if let backgroundColorInt = args["backgroundColor"] as? Int {
-                view.backgroundColor = self.colorFromInt(backgroundColorInt)
-            }
-            
-            if let cornerRadius = args["cornerRadius"] as? Double {
-                view.layer.cornerRadius = CGFloat(cornerRadius)
-                self.infoCornerRadius = CGFloat(cornerRadius)
-            }
-            
-            // Sync style to info labels (text color + corner radius, no background)
-            self.applyStyleToInfoLabels()
+            self.applyStyleArguments(args)
+            self.rebuildRenderedFrame()
         }
     }
-    
+
+    private func applyStyleArguments(_ args: [String: Any]?) {
+        guard let args else { return }
+        if let value = args["fontSize"] as? Double {
+            lyricFontSize = CGFloat(value)
+        }
+        if let value = args["textColor"] as? Int {
+            lyricTextColor = colorFromInt(value)
+            infoTextColor = lyricTextColor
+        }
+        if let value = args["backgroundColor"] as? Int {
+            lyricBackgroundColor = colorFromInt(value)
+        }
+        if let value = args["cornerRadius"] as? Double {
+            lyricCornerRadius = CGFloat(value)
+        }
+        if let value = args["paddingHorizontal"] as? Double {
+            lyricPaddingHorizontal = CGFloat(value)
+        }
+        if let value = args["paddingVertical"] as? Double {
+            lyricPaddingVertical = CGFloat(value)
+        }
+    }
+
     private func colorFromInt(_ argb: Int) -> UIColor {
-        let a = CGFloat((argb >> 24) & 0xFF) / 255.0
-        let r = CGFloat((argb >> 16) & 0xFF) / 255.0
-        let g = CGFloat((argb >> 8) & 0xFF) / 255.0
-        let b = CGFloat(argb & 0xFF) / 255.0
-        return UIColor(red: r, green: g, blue: b, alpha: a)
+        let alpha = CGFloat((argb >> 24) & 0xFF) / 255
+        let red = CGFloat((argb >> 16) & 0xFF) / 255
+        let green = CGFloat((argb >> 8) & 0xFF) / 255
+        let blue = CGFloat(argb & 0xFF) / 255
+        return UIColor(red: red, green: green, blue: blue, alpha: alpha)
     }
-    
-    private func applyStyleToInfoLabels() {
-        for label in [fpsLabel, networkSpeedLabel] {
-            guard let label = label else { continue }
-            label.textColor = infoTextColor.withAlphaComponent(0.8)
-            label.layer.cornerRadius = infoCornerRadius
+
+    private func emitDiagnostic(
+        _ event: String,
+        level: String = "info",
+        details: [String: Any] = [:]
+    ) {
+        let arguments: [String: Any] = [
+            "event": event,
+            "level": level,
+            "details": details,
+        ]
+        let send = { [weak self] in
+            self?.channel.invokeMethod("onDiagnostic", arguments: arguments)
         }
-    }
-    
-    private func prepareLyricView(text: String) {
-        if lyricView == nil {
-            lyricView = UILabel()
-            lyricView?.textColor = .white
-            lyricView?.backgroundColor = UIColor(white: 0.0, alpha: 0.3) // Default style
-            lyricView?.font = UIFont.systemFont(ofSize: 20, weight: .medium)
-            lyricView?.textAlignment = .center
-            lyricView?.numberOfLines = 0
-            lyricView?.layer.cornerRadius = 8
-            lyricView?.clipsToBounds = true
-            // Remove shadow
-            lyricView?.shadowColor = .clear
-            lyricView?.shadowOffset = .zero
-        }
-        lyricView?.text = text
-    }
-    
-    // MARK: - AVPictureInPictureControllerDelegate
-    
-    func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        // Add view to the PiP window
-        // Note: This relies on the fact that the PiP window becomes available in windows list
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            if let window = UIApplication.shared.windows.first {
-                if let view = self.lyricView {
-                    view.frame = window.bounds
-                    view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                    window.addSubview(view)
-                    window.bringSubviewToFront(view)
-                }
-                // Add info labels and start monitors
-                self.startMonitorsIfNeeded()
-                if self.showFPS { self.ensureFPSLabel() }
-                if self.showNetworkSpeed { self.ensureNetworkSpeedLabel() }
+        if Thread.isMainThread {
+            send()
+        } else {
+            DispatchQueue.main.async {
+                send()
             }
         }
     }
-    
-    func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        lyricView?.removeFromSuperview()
-        fpsLabel?.removeFromSuperview()
-        networkSpeedLabel?.removeFromSuperview()
+
+    private func diagnosticSnapshot() -> [String: Any] {
+        renderedFrameLock.lock()
+        let frameCount = compositionFrameCount
+        let renderGeneration = renderedFrameGeneration
+        renderedFrameLock.unlock()
+
+        let usesSampleBuffer = sampleBufferDisplayLayer != nil
+        var details: [String: Any] = [
+            "pipeline": usesSampleBuffer
+                ? "sample_buffer_display_layer"
+                : "legacy_av_player_layer_video_composition",
+            "systemVersion": UIDevice.current.systemVersion,
+            "pipSupported": AVPictureInPictureController.isPictureInPictureSupported(),
+            "pipPossible": pipController?.isPictureInPicturePossible ?? false,
+            "pipActive": pipController?.isPictureInPictureActive ?? false,
+            "pipSuspended": pipController?.isPictureInPictureSuspended ?? false,
+            "playerItemStatus": playerItemStatusDescription(player?.currentItem?.status),
+            "playerTimeControlStatus": playerTimeControlStatusDescription(),
+            "playerLayerReady": playerLayer?.isReadyForDisplay ?? false,
+            "compositionFrameCount": frameCount,
+            "sampleBufferEnqueueCount": sampleBufferEnqueueCount,
+            "sampleBufferHeartbeatIntervalMilliseconds": Int(
+                sampleBufferHeartbeatInterval * 1000
+            ),
+            "sampleBufferHeartbeatRunning": sampleBufferHeartbeatTimer != nil,
+            "sampleBufferHeartbeatEnqueueCount": sampleBufferHeartbeatEnqueueCount,
+            "sampleBufferMaximumEnqueueGapMilliseconds":
+                sampleBufferMaximumEnqueueGapMilliseconds,
+            "sampleBufferCreationFailureCount": sampleBufferCreationFailureCount,
+            "sampleBufferNonMonotonicTimestampCount":
+                sampleBufferNonMonotonicTimestampCount,
+            "stopRequestedByApp": stopRequestedByApp,
+            "renderGeneration": renderGeneration,
+            "renderWidth": Int(renderSize.width),
+            "renderHeight": Int(renderSize.height),
+            "renderScale": Double(renderScale),
+            "outputFrameRate": outputFrameRate,
+            "windowLogicalWidth": Double(renderInputLogicalWidth),
+            "screenNativeScale": Double(renderInputNativeScale),
+            "textLength": currentText.count,
+            "applicationState": applicationStateDescription(
+                UIApplication.shared.applicationState
+            ),
+            "lowPowerModeEnabled": ProcessInfo.processInfo.isLowPowerModeEnabled,
+        ]
+        if let sampleBufferLastCreationFailureStage {
+            details["sampleBufferLastCreationFailureStage"] =
+                sampleBufferLastCreationFailureStage
+        }
+        if let sampleBufferLastCreationFailureStatus {
+            details["sampleBufferLastCreationFailureStatus"] =
+                Int(sampleBufferLastCreationFailureStatus)
+        }
+        if let lastEnqueueUptime = sampleBufferLastEnqueueUptime {
+            details["sampleBufferMillisecondsSinceLastEnqueue"] = Int(
+                max(0, ProcessInfo.processInfo.systemUptime - lastEnqueueUptime) * 1000
+            )
+        }
+        if let pictureInPictureStartUptime {
+            details["pipActiveDurationMilliseconds"] = Int(
+                max(0, ProcessInfo.processInfo.systemUptime - pictureInPictureStartUptime)
+                    * 1000
+            )
+        }
+        let audioSession = AVAudioSession.sharedInstance()
+        details["audioSessionCategory"] = audioSession.category.rawValue
+        details["audioSessionMode"] = audioSession.mode.rawValue
+        details["audioSessionOtherAudioPlaying"] = audioSession.isOtherAudioPlaying
+        if let sampleBufferDisplayLayer {
+            if #available(iOS 17.0, *) {
+                details["sampleBufferQueueApi"] = "AVSampleBufferVideoRenderer"
+            } else {
+                details["sampleBufferQueueApi"] = "AVSampleBufferDisplayLayer"
+            }
+            sampleBufferDetails(sampleBufferDisplayLayer).forEach {
+                details[$0.key] = $0.value
+            }
+        }
+        if let error = player?.currentItem?.error as NSError? {
+            details["playerItemErrorDomain"] = error.domain
+            details["playerItemErrorCode"] = error.code
+            details["playerItemError"] = error.localizedDescription
+        }
+        if let error = player?.error as NSError? {
+            details["playerErrorDomain"] = error.domain
+            details["playerErrorCode"] = error.code
+            details["playerError"] = error.localizedDescription
+        }
+        return details
+    }
+
+    private func applicationStateDescription(_ state: UIApplication.State) -> String {
+        switch state {
+        case .active:
+            return "active"
+        case .inactive:
+            return "inactive"
+        case .background:
+            return "background"
+        @unknown default:
+            return "unrecognized"
+        }
+    }
+
+    private func sampleBufferDetails(
+        _ displayLayer: AVSampleBufferDisplayLayer
+    ) -> [String: Any] {
+        var details: [String: Any] = [
+            "sampleBufferStatus": sampleBufferStatusDescription(
+                sampleBufferStatus(for: displayLayer)
+            ),
+            "sampleBufferLayerWidth": Double(displayLayer.bounds.width),
+            "sampleBufferLayerHeight": Double(displayLayer.bounds.height),
+            "sampleBufferLayerAttached": displayLayer.superlayer != nil,
+            "sampleBufferLayerMatchesLogicalFrameSize":
+                displayLayer.bounds.size == logicalFrameSize,
+        ]
+        if #available(iOS 17.4, *) {
+            details["sampleBufferReadyForDisplay"] = displayLayer.isReadyForDisplay
+        } else {
+            details["sampleBufferReadyForDisplay"] = "unavailable_before_iOS_17_4"
+        }
+        if let error = sampleBufferError(for: displayLayer) {
+            details["sampleBufferErrorDomain"] = error.domain
+            details["sampleBufferErrorCode"] = error.code
+            details["sampleBufferError"] = error.localizedDescription
+        }
+        details["sampleBufferRequiresFlushToResumeDecoding"] =
+            sampleBufferRequiresFlushToResumeDecoding(for: displayLayer)
+        return details
+    }
+
+    private func sampleBufferStatus(
+        for displayLayer: AVSampleBufferDisplayLayer
+    ) -> AVQueuedSampleBufferRenderingStatus {
+        if #available(iOS 17.0, *) {
+            return displayLayer.sampleBufferRenderer.status
+        }
+        return displayLayer.status
+    }
+
+    private func sampleBufferError(
+        for displayLayer: AVSampleBufferDisplayLayer
+    ) -> NSError? {
+        if #available(iOS 17.0, *) {
+            if let error = displayLayer.sampleBufferRenderer.error {
+                return error as NSError
+            }
+            return nil
+        }
+        if let error = displayLayer.error {
+            return error as NSError
+        }
+        return nil
+    }
+
+    private func sampleBufferRequiresFlushToResumeDecoding(
+        for displayLayer: AVSampleBufferDisplayLayer
+    ) -> Bool {
+        if #available(iOS 17.0, *) {
+            return displayLayer.sampleBufferRenderer.requiresFlushToResumeDecoding
+        }
+        if #available(iOS 14.0, *) {
+            return displayLayer.requiresFlushToResumeDecoding
+        }
+        return false
+    }
+
+    private func sampleBufferStatusDescription(
+        _ status: AVQueuedSampleBufferRenderingStatus
+    ) -> String {
+        switch status {
+        case .unknown:
+            return "unknown"
+        case .rendering:
+            return "rendering"
+        case .failed:
+            return "failed"
+        @unknown default:
+            return "unrecognized"
+        }
+    }
+
+    private func renderMetricsDetails() -> [String: Any] {
+        [
+            "logicalFrameWidth": Int(logicalFrameSize.width),
+            "logicalFrameHeight": Int(logicalFrameSize.height),
+            "windowLogicalWidth": Double(renderInputLogicalWidth),
+            "screenNativeScale": Double(renderInputNativeScale),
+            "renderScale": Double(renderScale),
+            "renderWidth": Int(renderSize.width),
+            "renderHeight": Int(renderSize.height),
+            "outputFrameRate": outputFrameRate,
+        ]
+    }
+
+    private func playerItemStatusDescription(_ status: AVPlayerItem.Status?) -> String {
+        switch status {
+        case .readyToPlay:
+            return "readyToPlay"
+        case .failed:
+            return "failed"
+        case .unknown:
+            return "unknown"
+        case nil:
+            return "missing"
+        @unknown default:
+            return "unrecognized"
+        }
+    }
+
+    private func playerTimeControlStatusDescription() -> String {
+        guard let player else { return "missing" }
+        switch player.timeControlStatus {
+        case .paused:
+            return "paused"
+        case .waitingToPlayAtSpecifiedRate:
+            return "waiting"
+        case .playing:
+            return "playing"
+        @unknown default:
+            return "unrecognized"
+        }
+    }
+
+    private func errorDetails(_ error: Error?) -> [String: Any] {
+        guard let error = error as NSError? else {
+            return ["error": "missing_error_details"]
+        }
+        return [
+            "error": error.localizedDescription,
+            "domain": error.domain,
+            "code": error.code,
+        ]
+    }
+
+    private func recordCompositionFrame(sourceSize: CGSize, outputSize: CGSize) {
+        renderedFrameLock.lock()
+        compositionFrameCount += 1
+        let frameCount = compositionFrameCount
+        let shouldLog = !didLogFirstCompositionFrame
+        didLogFirstCompositionFrame = true
+        renderedFrameLock.unlock()
+
+        guard shouldLog else { return }
+        emitDiagnostic(
+            "video_compositor_first_frame",
+            details: [
+                "compositionFrameCount": frameCount,
+                "sourceWidth": Int(sourceSize.width),
+                "sourceHeight": Int(sourceSize.height),
+                "outputWidth": Int(outputSize.width),
+                "outputHeight": Int(outputSize.height),
+            ]
+        )
+    }
+
+    private func resetCompositionDiagnostics() {
+        renderedFrameLock.lock()
+        compositionFrameCount = 0
+        didLogFirstCompositionFrame = false
+        renderedFrameLock.unlock()
+        sampleBufferEnqueueCount = 0
+        sampleBufferHeartbeatEnqueueCount = 0
+        sampleBufferLastEnqueueUptime = nil
+        sampleBufferMaximumEnqueueGapMilliseconds = 0
+        sampleBufferCreationFailureCount = 0
+        didLogSampleBufferCreationFailure = false
+        sampleBufferLastCreationFailureStage = nil
+        sampleBufferLastCreationFailureStatus = nil
+        didLogSampleBufferFlushAfterFailure = false
+        didAttemptSampleBufferFailureReset = false
+        didLogSampleBufferResetFailure = false
+        sampleBufferResetInProgress = false
+        didLogSampleBufferFrameContent = false
+        sampleBufferFrameContentDetails = nil
+        sampleBufferLastPresentationTime = nil
+        sampleBufferNonMonotonicTimestampCount = 0
+    }
+
+    private func schedulePictureInPictureHealthCheck(after delay: TimeInterval) {
+        let generation = startGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, generation == self.startGeneration,
+                  self.pipController?.isPictureInPictureActive == true else { return }
+            let snapshot = self.diagnosticSnapshot()
+            let issue: String
+            if let displayLayer = self.sampleBufferDisplayLayer {
+                if self.sampleBufferStatus(for: displayLayer) == .failed {
+                    issue = "sample_buffer_failed"
+                } else if self.sampleBufferEnqueueCount == 0 {
+                    issue = "sample_buffer_no_enqueued_frame"
+                } else if self.sampleBufferCreationFailureCount > 0 {
+                    issue = "sample_buffer_creation_failed"
+                } else if let lastEnqueueUptime = self.sampleBufferLastEnqueueUptime,
+                          ProcessInfo.processInfo.systemUptime - lastEnqueueUptime
+                              > self.sampleBufferHeartbeatInterval * 3 {
+                    issue = "sample_buffer_cadence_stalled"
+                } else if #available(iOS 17.4, *),
+                          !displayLayer.isReadyForDisplay {
+                    issue = "sample_buffer_no_display_frame"
+                } else {
+                    issue = "pipeline_reports_ready"
+                }
+            } else {
+                let status = self.player?.currentItem?.status
+                let frameCount = snapshot["compositionFrameCount"] as? Int ?? 0
+                let layerReady = self.playerLayer?.isReadyForDisplay == true
+                if status == .failed {
+                    issue = "player_item_failed"
+                } else if status != .readyToPlay {
+                    issue = "player_item_not_ready"
+                } else if frameCount == 0 {
+                    issue = "video_compositor_no_output"
+                } else if !layerReady {
+                    issue = "player_layer_no_display_frame"
+                } else {
+                    issue = "pipeline_reports_ready"
+                }
+            }
+            var details = snapshot
+            details["health"] = issue
+            details["delayMilliseconds"] = Int(delay * 1000)
+            self.emitDiagnostic(
+                "pip_health_check",
+                level: issue == "pipeline_reports_ready" ? "info" : "warning",
+                details: details
+            )
+        }
+    }
+
+    private func rebuildRenderedFrame() {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: renderSize, format: format)
+        let image = renderer.image { context in
+            let bounds = CGRect(origin: .zero, size: renderSize)
+            UIColor.black.setFill()
+            context.fill(bounds)
+
+            lyricBackgroundColor.setFill()
+            let backgroundPath = UIBezierPath(
+                roundedRect: bounds,
+                cornerRadius: lyricCornerRadius * renderScale
+            )
+            backgroundPath.fill()
+
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.alignment = .center
+            paragraphStyle.lineBreakMode = .byWordWrapping
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(
+                    ofSize: lyricFontSize * renderScale,
+                    weight: .medium
+                ),
+                .foregroundColor: lyricTextColor,
+                .paragraphStyle: paragraphStyle,
+            ]
+            let horizontalInset = lyricPaddingHorizontal * renderScale
+            let verticalInset = lyricPaddingVertical * renderScale
+            var textBounds = bounds.insetBy(
+                dx: horizontalInset,
+                dy: verticalInset
+            )
+            if showFPS || showNetworkSpeed {
+                textBounds.size.height = max(0, textBounds.height - 24)
+            }
+            let attributedText = NSAttributedString(
+                string: currentText,
+                attributes: attributes
+            )
+            let measured = attributedText.boundingRect(
+                with: textBounds.size,
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil
+            )
+            let drawHeight = min(textBounds.height, ceil(measured.height))
+            let drawRect = CGRect(
+                x: textBounds.minX,
+                y: textBounds.midY - drawHeight / 2,
+                width: textBounds.width,
+                height: drawHeight
+            )
+            attributedText.draw(
+                with: drawRect,
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil
+            )
+
+            let infoAttributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedDigitSystemFont(
+                    ofSize: 10 * renderScale,
+                    weight: .medium
+                ),
+                .foregroundColor: infoTextColor.withAlphaComponent(0.8),
+            ]
+            let infoY = renderSize.height - (18 * renderScale)
+            if showFPS, let currentFPS {
+                NSString(string: "\(currentFPS) FPS").draw(
+                    in: CGRect(
+                        x: 4 * renderScale,
+                        y: infoY,
+                        width: 60 * renderScale,
+                        height: 14 * renderScale
+                    ),
+                    withAttributes: infoAttributes
+                )
+            }
+            if showNetworkSpeed, let currentNetworkSpeed {
+                let width = 150 * renderScale
+                let speedParagraphStyle = NSMutableParagraphStyle()
+                speedParagraphStyle.alignment = .right
+                var speedAttributes = infoAttributes
+                speedAttributes[.paragraphStyle] = speedParagraphStyle
+                NSString(string: currentNetworkSpeed).draw(
+                    in: CGRect(
+                        x: renderSize.width - width - (4 * renderScale),
+                        y: infoY,
+                        width: width,
+                        height: 14 * renderScale
+                    ),
+                    withAttributes: speedAttributes
+                )
+            }
+        }
+        guard let cgImage = image.cgImage else { return }
+        renderedFrameLock.lock()
+        renderedFrame = cgImage
+        renderedCIImage = CIImage(cgImage: cgImage)
+        renderedFrameGeneration += 1
+        let generation = renderedFrameGeneration
+        renderedFrameLock.unlock()
+        enqueueCurrentSampleBuffer(reason: "render_\(generation)")
+    }
+
+    private func currentRenderedCIImage() -> CIImage? {
+        renderedFrameLock.lock()
+        defer { renderedFrameLock.unlock() }
+        return renderedCIImage
+    }
+
+    private func currentRenderedFrame() -> (image: CGImage, generation: Int)? {
+        renderedFrameLock.lock()
+        defer { renderedFrameLock.unlock() }
+        guard let renderedFrame else { return nil }
+        return (renderedFrame, renderedFrameGeneration)
+    }
+
+    fileprivate func refreshSampleBufferFrame() {
+        DispatchQueue.main.async {
+            self.enqueueCurrentSampleBuffer(reason: "pip_refresh")
+        }
+    }
+
+    private func startSampleBufferHeartbeat() {
+        guard sampleBufferDisplayLayer != nil,
+              sampleBufferHeartbeatTimer == nil else { return }
+        enqueueCurrentSampleBuffer(reason: "heartbeat_start")
+        let timer = Timer(
+            timeInterval: sampleBufferHeartbeatInterval,
+            repeats: true
+        ) { [weak self] _ in
+            guard let self,
+                  self.pipController?.isPictureInPictureActive == true
+                    || self.pendingShowResult != nil else { return }
+            self.enqueueCurrentSampleBuffer(reason: "heartbeat")
+        }
+        timer.tolerance = sampleBufferHeartbeatInterval * 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        sampleBufferHeartbeatTimer = timer
+    }
+
+    private func stopSampleBufferHeartbeat() {
+        sampleBufferHeartbeatTimer?.invalidate()
+        sampleBufferHeartbeatTimer = nil
+    }
+
+    private func enqueueCurrentSampleBuffer(
+        reason: String,
+        afterFailureReset: Bool = false
+    ) {
+        guard #available(iOS 15.0, *),
+              let displayLayer = sampleBufferDisplayLayer,
+              let frame = currentRenderedFrame() else { return }
+        guard !sampleBufferResetInProgress || afterFailureReset else { return }
+
+        if sampleBufferStatus(for: displayLayer) != .failed {
+            didAttemptSampleBufferFailureReset = false
+        }
+        if sampleBufferStatus(for: displayLayer) == .failed, !afterFailureReset {
+            guard !didAttemptSampleBufferFailureReset else { return }
+            didAttemptSampleBufferFailureReset = true
+            if !didLogSampleBufferFlushAfterFailure {
+                didLogSampleBufferFlushAfterFailure = true
+                emitDiagnostic(
+                    "sample_buffer_flush_after_failure",
+                    level: "warning",
+                    details: sampleBufferDetails(displayLayer)
+                )
+            }
+            resetSampleBufferRendererAfterFailure(displayLayer) { [weak self] in
+                self?.enqueueCurrentSampleBuffer(
+                    reason: reason,
+                    afterFailureReset: true
+                )
+            }
+            return
+        }
+        if sampleBufferStatus(for: displayLayer) == .failed {
+            if !didLogSampleBufferResetFailure {
+                didLogSampleBufferResetFailure = true
+                emitDiagnostic(
+                    "sample_buffer_reset_failed",
+                    level: "error",
+                    details: sampleBufferDetails(displayLayer)
+                )
+            }
+            return
+        }
+
+        guard let sampleBuffer = makeImmediateSampleBuffer(
+            from: frame.image,
+            generation: frame.generation
+        ) else {
+            sampleBufferCreationFailureCount += 1
+            if !didLogSampleBufferCreationFailure {
+                didLogSampleBufferCreationFailure = true
+                var details: [String: Any] = [
+                    "reason": reason,
+                    "imageWidth": frame.image.width,
+                    "imageHeight": frame.image.height,
+                    "failureStage": sampleBufferLastCreationFailureStage ?? "unknown",
+                ]
+                if let sampleBufferLastCreationFailureStatus {
+                    details["failureStatus"] = Int(sampleBufferLastCreationFailureStatus)
+                }
+                emitDiagnostic(
+                    "sample_buffer_creation_failed",
+                    level: "error",
+                    details: details
+                )
+            }
+            return
+        }
+
+        if #available(iOS 17.0, *) {
+            displayLayer.sampleBufferRenderer.enqueue(sampleBuffer)
+        } else {
+            displayLayer.enqueue(sampleBuffer)
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let lastEnqueueUptime = sampleBufferLastEnqueueUptime {
+            sampleBufferMaximumEnqueueGapMilliseconds = max(
+                sampleBufferMaximumEnqueueGapMilliseconds,
+                Int(max(0, now - lastEnqueueUptime) * 1000)
+            )
+        }
+        sampleBufferLastEnqueueUptime = now
+        sampleBufferEnqueueCount += 1
+        if reason == "heartbeat" {
+            sampleBufferHeartbeatEnqueueCount += 1
+        }
+        if sampleBufferEnqueueCount == 1 {
+            var details = sampleBufferDetails(displayLayer)
+            details["reason"] = reason
+            details["imageWidth"] = frame.image.width
+            details["imageHeight"] = frame.image.height
+            if let sampleBufferFrameContentDetails {
+                details["frameContent"] = sampleBufferFrameContentDetails
+            }
+            emitDiagnostic("sample_buffer_frame_enqueued", details: details)
+        }
+    }
+
+    @available(iOS 15.0, *)
+    private func resetSampleBufferRendererAfterFailure(
+        _ displayLayer: AVSampleBufferDisplayLayer,
+        completion: @escaping () -> Void
+    ) {
+        sampleBufferLastPresentationTime = nil
+        sampleBufferResetInProgress = true
+        if #available(iOS 17.0, *) {
+            displayLayer.sampleBufferRenderer.flush(
+                removingDisplayedImage: true,
+                completionHandler: {
+                    DispatchQueue.main.async {
+                        self.sampleBufferResetInProgress = false
+                        completion()
+                    }
+                }
+            )
+        } else {
+            displayLayer.flushAndRemoveImage()
+            if displayLayer.status == .failed {
+                displayLayer.flush()
+            }
+            sampleBufferResetInProgress = false
+            completion()
+        }
+    }
+
+    @available(iOS 15.0, *)
+    private func makeImmediateSampleBuffer(
+        from image: CGImage,
+        generation: Int
+    ) -> CMSampleBuffer? {
+        let pixelBuffer: CVPixelBuffer
+        let formatDescription: CMVideoFormatDescription
+        if sampleBufferFrameGeneration == generation,
+           let cachedPixelBuffer = sampleBufferPixelBuffer,
+           let cachedFormatDescription = sampleBufferFormatDescription {
+            pixelBuffer = cachedPixelBuffer
+            formatDescription = cachedFormatDescription
+        } else {
+            var newPixelBuffer: CVPixelBuffer?
+            let attributes: [CFString: Any] = [
+                kCVPixelBufferCGImageCompatibilityKey: true,
+                kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                kCVPixelBufferIOSurfacePropertiesKey: [:],
+            ]
+            let status = CVPixelBufferCreate(
+                kCFAllocatorDefault,
+                image.width,
+                image.height,
+                kCVPixelFormatType_32BGRA,
+                attributes as CFDictionary,
+                &newPixelBuffer
+            )
+            guard status == kCVReturnSuccess else {
+                recordSampleBufferCreationFailure(
+                    stage: "CVPixelBufferCreate",
+                    status: status
+                )
+                return nil
+            }
+            guard let newPixelBuffer else {
+                recordSampleBufferCreationFailure(stage: "pixel_buffer_missing")
+                return nil
+            }
+
+            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
+                ?? CGColorSpaceCreateDeviceRGB()
+            CVBufferSetAttachment(
+                newPixelBuffer,
+                kCVImageBufferCGColorSpaceKey,
+                colorSpace,
+                .shouldPropagate
+            )
+            CVBufferSetAttachment(
+                newPixelBuffer,
+                kCVImageBufferAlphaChannelIsOpaque,
+                kCFBooleanTrue,
+                .shouldPropagate
+            )
+            ciContext.render(
+                CIImage(cgImage: image),
+                to: newPixelBuffer,
+                bounds: CGRect(x: 0, y: 0, width: image.width, height: image.height),
+                colorSpace: colorSpace
+            )
+
+            var newFormatDescription: CMVideoFormatDescription?
+            let formatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
+                allocator: kCFAllocatorDefault,
+                imageBuffer: newPixelBuffer,
+                formatDescriptionOut: &newFormatDescription
+            )
+            guard formatStatus == noErr else {
+                recordSampleBufferCreationFailure(
+                    stage: "CMVideoFormatDescriptionCreateForImageBuffer",
+                    status: formatStatus
+                )
+                return nil
+            }
+            guard let newFormatDescription else {
+                recordSampleBufferCreationFailure(
+                    stage: "format_description_missing"
+                )
+                return nil
+            }
+            sampleBufferPixelBuffer = newPixelBuffer
+            sampleBufferFormatDescription = newFormatDescription
+            sampleBufferFrameGeneration = generation
+            pixelBuffer = newPixelBuffer
+            formatDescription = newFormatDescription
+        }
+
+        emitSampleBufferFrameContentDiagnosticIfNeeded(pixelBuffer)
+
+        let hostTime = CMClockGetTime(CMClockGetHostTimeClock())
+        let presentationTime: CMTime
+        if let lastPresentationTime = sampleBufferLastPresentationTime,
+           CMTimeCompare(hostTime, lastPresentationTime) <= 0 {
+            presentationTime = CMTimeAdd(
+                lastPresentationTime,
+                CMTime(value: 1, timescale: 600)
+            )
+            sampleBufferNonMonotonicTimestampCount += 1
+        } else {
+            presentationTime = hostTime
+        }
+        sampleBufferLastPresentationTime = presentationTime
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(
+                seconds: sampleBufferHeartbeatInterval,
+                preferredTimescale: 600
+            ),
+            presentationTimeStamp: presentationTime,
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        let sampleBufferStatus = CMSampleBufferCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            dataReady: true,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard sampleBufferStatus == noErr else {
+            recordSampleBufferCreationFailure(
+                stage: "CMSampleBufferCreateForImageBuffer",
+                status: sampleBufferStatus
+            )
+            return nil
+        }
+        guard let sampleBuffer else {
+            recordSampleBufferCreationFailure(stage: "sample_buffer_missing")
+            return nil
+        }
+
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: true
+        ), CFArrayGetCount(attachments) > 0 else {
+            recordSampleBufferCreationFailure(stage: "sample_attachments_missing")
+            return nil
+        }
+        let attachment = unsafeBitCast(
+            CFArrayGetValueAtIndex(attachments, 0),
+            to: CFMutableDictionary.self
+        )
+        CFDictionarySetValue(
+            attachment,
+            Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+            Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+        )
+        return sampleBuffer
+    }
+
+    private func recordSampleBufferCreationFailure(
+        stage: String,
+        status: OSStatus? = nil
+    ) {
+        sampleBufferLastCreationFailureStage = stage
+        sampleBufferLastCreationFailureStatus = status
+    }
+
+    private func emitSampleBufferFrameContentDiagnosticIfNeeded(
+        _ pixelBuffer: CVPixelBuffer
+    ) {
+        guard !didLogSampleBufferFrameContent else { return }
+        didLogSampleBufferFrameContent = true
+
+        let lockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        guard lockStatus == kCVReturnSuccess else {
+            emitDiagnostic(
+                "sample_buffer_frame_content_unavailable",
+                level: "warning",
+                details: ["pixelBufferLockStatus": lockStatus]
+            )
+            return
+        }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            emitDiagnostic(
+                "sample_buffer_frame_content_unavailable",
+                level: "warning",
+                details: ["reason": "missing_base_address"]
+            )
+            return
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let bytes = baseAddress.assumingMemoryBound(to: UInt8.self)
+        var sampledPixelCount = 0
+        var nonBlackPixelCount = 0
+        var maximumRGB = 0
+        var minimumAlpha = 255
+
+        for yStep in 1...4 {
+            let y = min(height - 1, height * yStep / 5)
+            for xStep in 1...8 {
+                let x = min(width - 1, width * xStep / 9)
+                let offset = y * bytesPerRow + x * 4
+                let blue = Int(bytes[offset])
+                let green = Int(bytes[offset + 1])
+                let red = Int(bytes[offset + 2])
+                let alpha = Int(bytes[offset + 3])
+                let brightestComponent = max(red, green, blue)
+                sampledPixelCount += 1
+                maximumRGB = max(maximumRGB, brightestComponent)
+                minimumAlpha = min(minimumAlpha, alpha)
+                if brightestComponent > 8 {
+                    nonBlackPixelCount += 1
+                }
+            }
+        }
+
+        let details: [String: Any] = [
+            "pixelFormat": CVPixelBufferGetPixelFormatType(pixelBuffer),
+            "pixelWidth": width,
+            "pixelHeight": height,
+            "sampledPixelCount": sampledPixelCount,
+            "nonBlackPixelCount": nonBlackPixelCount,
+            "maximumRGB": maximumRGB,
+            "minimumAlpha": minimumAlpha,
+            "hasColorSpace": CVBufferGetAttachment(
+                pixelBuffer,
+                kCVImageBufferCGColorSpaceKey,
+                nil
+            ) != nil,
+            "alphaMarkedOpaque": CVBufferGetAttachment(
+                pixelBuffer,
+                kCVImageBufferAlphaChannelIsOpaque,
+                nil
+            ) != nil,
+        ]
+        sampleBufferFrameContentDetails = details
+        emitDiagnostic("sample_buffer_frame_content", details: details)
+    }
+
+    // MARK: - AVPictureInPictureControllerDelegate
+
+    func pictureInPictureControllerWillStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        startSampleBufferHeartbeat()
+        emitDiagnostic("pip_will_start", details: diagnosticSnapshot())
+        refreshSampleBufferFrame()
+    }
+
+    func pictureInPictureControllerDidStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        pictureInPictureStartUptime = ProcessInfo.processInfo.systemUptime
+        startSampleBufferHeartbeat()
+        emitDiagnostic("pip_did_start", details: diagnosticSnapshot())
+        refreshSampleBufferFrame()
+        completePendingShow(true)
+        startMonitorsIfNeeded()
+        schedulePictureInPictureHealthCheck(after: 0.5)
+        schedulePictureInPictureHealthCheck(after: 2)
+        schedulePictureInPictureHealthCheck(after: 10)
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        emitDiagnostic("pip_did_stop", details: diagnosticSnapshot())
+        stopSampleBufferHeartbeat()
+        pictureInPictureStartUptime = nil
+        startGeneration += 1
+        completePendingShow(false)
         stopMonitors()
         player?.pause()
         channel.invokeMethod("onClose", arguments: nil)
     }
-    
-    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
-        print("PiP failed: \(error)")
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        var details = diagnosticSnapshot()
+        errorDetails(error).forEach { details[$0.key] = $0.value }
+        emitDiagnostic("pip_failed_to_start", level: "error", details: details)
+        stopSampleBufferHeartbeat()
+        pictureInPictureStartUptime = nil
+        startGeneration += 1
+        completePendingShow(false)
+        stopMonitors()
+        player?.pause()
     }
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -92,6 +93,8 @@ class _LogScreenState extends State<LogScreen> {
         break;
       case 'clear':
         LogService.instance.clear();
+        // 内存与落盘都要清，否则「清空」后重新打开还能看到旧日志。
+        await LogService.instance.clearPersistedLogs();
         _updateFilteredLogs();
         break;
     }
@@ -99,7 +102,7 @@ class _LogScreenState extends State<LogScreen> {
 
   Future<void> _copyLogs(S l10n) async {
     await Clipboard.setData(
-      ClipboardData(text: LogService.instance.exportAsText()),
+      ClipboardData(text: await LogService.instance.exportCombinedText()),
     );
     if (!mounted) return;
     SnackBarUtil.showSuccess(context, l10n.logCopied);
@@ -108,14 +111,17 @@ class _LogScreenState extends State<LogScreen> {
   Future<void> _exportLogs(S l10n) async {
     try {
       final logService = LogService.instance;
-      final content = logService.exportAsText();
+      final content = await logService.exportCombinedText();
       final fileName = logService.exportFileName;
 
-      if (Platform.isIOS) {
+      // 移动端（iOS/Android）必须直接传字节：Android 的 saveFile 走 SAF，
+      // 返回 content:// URI，dart:io File 无法写入；传 bytes 由插件完成保存。
+      // 注意用 utf8.encode 而非 codeUnits，避免中文等多字节字符乱码。
+      if (Platform.isIOS || Platform.isAndroid) {
         final result = await FilePicker.platform.saveFile(
           dialogTitle: l10n.logExport,
           fileName: fileName,
-          bytes: Uint8List.fromList(content.codeUnits),
+          bytes: Uint8List.fromList(utf8.encode(content)),
         );
         if (!mounted || result == null) return;
         SnackBarUtil.showSuccess(context, l10n.logExported(result));

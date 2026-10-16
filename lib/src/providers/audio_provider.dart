@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../models/audio_track.dart';
+import '../models/audio_gain_settings.dart';
+import '../models/audio_tap_playlist_mode.dart';
 import '../models/work.dart';
 import '../services/audio_player_service.dart';
 import '../services/log_service.dart';
@@ -23,32 +26,37 @@ final audioPlayerServiceProvider = Provider<AudioPlayerService>((ref) {
 // Current Track Provider
 final currentTrackProvider = StreamProvider<AudioTrack?>((ref) {
   final service = ref.watch(audioPlayerServiceProvider);
-  return service.currentTrackStream;
+  return _withInitialValue(service.currentTrack, service.currentTrackStream);
 });
 
 // Player State Provider
 final playerStateProvider = StreamProvider<PlayerState>((ref) {
   final service = ref.watch(audioPlayerServiceProvider);
-  return service.playerStateStream;
+  return _withInitialValue(service.playerState, service.playerStateStream);
 });
 
 // Position Provider
 final positionProvider = StreamProvider<Duration>((ref) {
   final service = ref.watch(audioPlayerServiceProvider);
-  return service.positionStream;
+  return _withInitialValue(service.position, service.positionStream);
 });
 
 // Duration Provider
 final durationProvider = StreamProvider<Duration?>((ref) {
   final service = ref.watch(audioPlayerServiceProvider);
-  return service.durationStream;
+  return _withInitialValue(service.duration, service.durationStream);
 });
 
 // Queue Provider
 final queueProvider = StreamProvider<List<AudioTrack>>((ref) {
   final service = ref.watch(audioPlayerServiceProvider);
-  return service.queueStream;
+  return _withInitialValue(service.queue, service.queueStream);
 });
+
+Stream<T> _withInitialValue<T>(T initialValue, Stream<T> updates) async* {
+  yield initialValue;
+  yield* updates;
+}
 
 // Playing State Provider (convenience)
 final isPlayingProvider = Provider<bool>((ref) {
@@ -106,6 +114,7 @@ final canSkipNextProvider = Provider<bool>((ref) {
 class AudioPlayerController extends StateNotifier<AudioPlayerState> {
   final AudioPlayerService _service;
   final Ref _ref;
+  Future<void> _pendingDismissal = Future.value();
 
   AudioPlayerController(this._service, this._ref)
       : super(const AudioPlayerState()) {
@@ -145,6 +154,15 @@ class AudioPlayerController extends StateNotifier<AudioPlayerState> {
       },
     );
 
+    _ref.listen<AudioGainSettings>(
+      audioGainSettingsProvider,
+      (previous, next) {
+        if (previous?.decibels != next.decibels) {
+          _service.updateAudioGain(next.decibels);
+        }
+      },
+    );
+
     // 监听下一首预加载设置变化
     _ref.listen<PreloadNextSettings>(
       preloadNextSettingsProvider,
@@ -161,8 +179,12 @@ class AudioPlayerController extends StateNotifier<AudioPlayerState> {
   }
 
   Future<void> initialize() async {
-    // Request notification permission for Android 13+
-    await Permission.notification.request();
+    // Notification permission is an Android-only requirement here. The
+    // permission_handler Apple implementation is iOS-only, so requesting it
+    // on macOS aborts audio initialization before session restoration.
+    if (Platform.isAndroid) {
+      await Permission.notification.request();
+    }
 
     await _service.initialize();
 
@@ -181,12 +203,23 @@ class AudioPlayerController extends StateNotifier<AudioPlayerState> {
       intensity: hapticsSettings.intensity,
     );
 
+    await _service.updateAudioSessionConfig(
+      _ref.read(audioPassthroughProvider),
+    );
+    await _service.updateAudioGain(
+      _ref.read(audioGainSettingsProvider).decibels,
+    );
+
     // 初始化时应用当前的下一首预加载阈值
     final preloadSettings = _ref.read(preloadNextSettingsProvider);
     final preloadSeconds = preloadSettings.effectiveSeconds;
     _service.updatePreloadThreshold(
       preloadSeconds == null ? null : Duration(seconds: preloadSeconds),
     );
+
+    // Restore only after privacy and output settings are active. Restored
+    // sessions stay paused until the user explicitly resumes playback.
+    await _service.restorePlaybackSession();
 
     // Listen to player state changes
     _service.playerStateStream.listen((playerState) {
@@ -196,7 +229,12 @@ class AudioPlayerController extends StateNotifier<AudioPlayerState> {
   }
 
   Future<void> playTrack(AudioTrack track) async {
-    final shouldAppend = state.appendMode && queue.isNotEmpty;
+    await _pendingDismissal;
+    final playlistMode = await _ref
+        .read(audioTapPlaylistModeProvider.notifier)
+        .getMode();
+    final shouldAppend =
+        playlistMode != AudioTapPlaylistMode.replaceQueue && queue.isNotEmpty;
 
     if (shouldAppend) {
       final indexMap = await _service.appendTracks([track]);
@@ -208,6 +246,8 @@ class AudioPlayerController extends StateNotifier<AudioPlayerState> {
       await _service.updateQueue([track]);
       await _service.play();
     }
+    _ref.read(miniPlayerVisibilityProvider.notifier).show();
+
     // Ensure single-track plays are recorded to history.
     if (track.workId != null) {
       try {
@@ -225,27 +265,46 @@ class AudioPlayerController extends StateNotifier<AudioPlayerState> {
   }
 
   Future<void> playTracks(List<AudioTrack> tracks,
-      {int startIndex = 0, Work? work}) async {
-    _log.captureOutput(
-        '[AudioController] playTracks调用: ${tracks.length}个轨道, startIndex=$startIndex');
-    _log.captureOutput(
-        '[AudioController] 第一个轨道: title="${tracks.first.title}", url="${tracks.first.url}"');
+      {int startIndex = 0,
+      Work? work,
+      AudioTapPlaylistMode? playlistMode}) async {
+    await _pendingDismissal;
+    if (tracks.isEmpty) return;
 
-    final shouldAppend = state.appendMode && queue.isNotEmpty;
+    final AudioTapPlaylistMode effectiveMode = playlistMode ??
+        await _ref.read(audioTapPlaylistModeProvider.notifier).getMode();
+    final selectedIndex = startIndex.clamp(0, tracks.length - 1);
+    final selectedTrack = tracks[selectedIndex];
+    final queueTracks = effectiveMode == AudioTapPlaylistMode.appendSingle
+        ? <AudioTrack>[selectedTrack]
+        : tracks;
+    final queueStartIndex =
+        effectiveMode == AudioTapPlaylistMode.appendSingle ? 0 : selectedIndex;
+
+    _log.captureOutput(
+        '[AudioController] playTracks调用: ${queueTracks.length}个轨道, '
+        'startIndex=$queueStartIndex, mode=${effectiveMode.name}');
+    _log.captureOutput(
+        '[AudioController] 第一个轨道: title="${queueTracks.first.title}", '
+        'url="${queueTracks.first.url}"');
+
+    final shouldAppend = effectiveMode != AudioTapPlaylistMode.replaceQueue &&
+        queue.isNotEmpty;
 
     if (shouldAppend) {
-      final indexMap = await _service.appendTracks(tracks);
-      final targetTrack = tracks[startIndex.clamp(0, tracks.length - 1)];
+      final indexMap = await _service.appendTracks(queueTracks);
+      final targetTrack = queueTracks[queueStartIndex];
       final targetIndex = indexMap[targetTrack.id];
       if (targetIndex != null) {
         await _service.skipToIndex(targetIndex);
       }
     } else {
-      await _service.updateQueue(tracks, startIndex: startIndex);
+      await _service.updateQueue(queueTracks, startIndex: queueStartIndex);
       _log.captureOutput('[AudioController] updateQueue完成');
       await _service.play();
       _log.captureOutput('[AudioController] play完成');
     }
+    _ref.read(miniPlayerVisibilityProvider.notifier).show();
 
     if (work != null) {
       _ref.read(historyProvider.notifier).addOrUpdate(work);
@@ -253,7 +312,9 @@ class AudioPlayerController extends StateNotifier<AudioPlayerState> {
   }
 
   Future<void> play() async {
+    await _pendingDismissal;
     await _service.play();
+    _ref.read(miniPlayerVisibilityProvider.notifier).show();
   }
 
   Future<void> pause() async {
@@ -266,6 +327,17 @@ class AudioPlayerController extends StateNotifier<AudioPlayerState> {
     await _service.stop();
     // 停止时立即落盘历史
     PlaybackHistoryService.instance.onStopped();
+  }
+
+  Future<void> dismissMiniPlayer() {
+    _ref.read(miniPlayerVisibilityProvider.notifier).hide();
+    final historyFlush = PlaybackHistoryService.instance.onStopped();
+    final clearing = _service.clearQueue();
+    final dismissal = Future.wait([historyFlush, clearing]).then<void>((_) {});
+    _pendingDismissal = dismissal.catchError((Object error) {
+      _log.captureOutput('[AudioController] Mini Player dismissal failed: $error');
+    });
+    return dismissal;
   }
 
   Future<void> seek(Duration position) async {
@@ -316,16 +388,6 @@ class AudioPlayerController extends StateNotifier<AudioPlayerState> {
     state = state.copyWith(shuffleMode: enabled);
   }
 
-  bool toggleAppendMode() {
-    final newValue = !state.appendMode;
-    final shouldShowHint = newValue && !state.hasShownAppendHint;
-    state = state.copyWith(
-      appendMode: newValue,
-      hasShownAppendHint: state.hasShownAppendHint || shouldShowHint,
-    );
-    return shouldShowHint;
-  }
-
   Future<void> setVolume(double volume) async {
     await _service.setVolume(volume);
     state = state.copyWith(volume: volume);
@@ -351,16 +413,12 @@ class AudioPlayerState {
   final bool shuffleMode;
   final double volume;
   final double speed;
-  final bool appendMode;
-  final bool hasShownAppendHint;
 
   const AudioPlayerState({
     this.repeatMode = LoopMode.off,
     this.shuffleMode = false,
     this.volume = 1.0,
     this.speed = 1.0,
-    this.appendMode = false,
-    this.hasShownAppendHint = false,
   });
 
   AudioPlayerState copyWith({
@@ -368,16 +426,12 @@ class AudioPlayerState {
     bool? shuffleMode,
     double? volume,
     double? speed,
-    bool? appendMode,
-    bool? hasShownAppendHint,
   }) {
     return AudioPlayerState(
       repeatMode: repeatMode ?? this.repeatMode,
       shuffleMode: shuffleMode ?? this.shuffleMode,
       volume: volume ?? this.volume,
       speed: speed ?? this.speed,
-      appendMode: appendMode ?? this.appendMode,
-      hasShownAppendHint: hasShownAppendHint ?? this.hasShownAppendHint,
     );
   }
 }
@@ -405,16 +459,24 @@ final miniPlayerVisibilityProvider =
 
 // Sleep Timer Controller
 class SleepTimerController extends StateNotifier<SleepTimerState> {
-  final Ref _ref;
+  final AudioPlayerService _service;
+  final Future<void> Function() pause;
+  final DateTime Function() _now;
   Timer? _timer;
   Timer? _countdownTimer;
   StreamSubscription? _trackSubscription;
+  StreamSubscription<void>? _trackEndSubscription;
 
-  SleepTimerController(this._ref) : super(const SleepTimerState());
+  SleepTimerController(
+    this._service, {
+    required this.pause,
+    DateTime Function()? now,
+  }) : _now = now ?? DateTime.now,
+       super(const SleepTimerState());
 
   /// 设置定时器（按时长）
   void setTimer(Duration duration, {bool finishCurrentTrack = false}) {
-    final endTime = DateTime.now().add(duration);
+    final endTime = _now().add(duration);
     _setTimerInternal(endTime, finishCurrentTrack: finishCurrentTrack);
   }
 
@@ -428,7 +490,7 @@ class SleepTimerController extends StateNotifier<SleepTimerState> {
     // 取消现有定时器
     cancelTimer();
 
-    final duration = endTime.difference(DateTime.now());
+    final duration = endTime.difference(_now());
 
     // 如果时间已经过了，则不设置
     if (duration.isNegative || duration.inSeconds < 1) {
@@ -440,17 +502,13 @@ class SleepTimerController extends StateNotifier<SleepTimerState> {
       if (state.finishCurrentTrack) {
         _waitForTrackEndAndPause();
       } else {
-        final audioController =
-            _ref.read(audioPlayerControllerProvider.notifier);
-        audioController.pause();
-        // 定时器结束后重置状态
-        cancelTimer();
+        unawaited(_pauseAndCancel());
       }
     });
 
     // 设置倒计时更新定时器 - 每秒更新一次剩余时间
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      final remaining = endTime.difference(DateTime.now());
+      final remaining = endTime.difference(_now());
       if (remaining.isNegative) {
         timer.cancel();
         return;
@@ -469,6 +527,15 @@ class SleepTimerController extends StateNotifier<SleepTimerState> {
       remainingTime: duration,
       finishCurrentTrack: finishCurrentTrack,
     );
+
+    if (finishCurrentTrack) {
+      // Check the wall-clock deadline even if a background Timer callback is late.
+      _trackEndSubscription = _service.trackEndStream.listen((_) {
+        if (!_now().isBefore(endTime)) {
+          unawaited(_pauseAndCancel());
+        }
+      });
+    }
   }
 
   /// 等待当前音轨播放结束并暂停
@@ -478,11 +545,12 @@ class SleepTimerController extends StateNotifier<SleepTimerState> {
     _countdownTimer?.cancel();
     _countdownTimer = null;
 
-    final audioController = _ref.read(audioPlayerControllerProvider.notifier);
-    final initialTrack = audioController.currentTrack;
+    final initialTrack = _service.currentTrack;
 
-    if (initialTrack == null) {
-      cancelTimer();
+    if (initialTrack == null ||
+        !_service.playing ||
+        _service.playerState.processingState == ProcessingState.completed) {
+      unawaited(_pauseAndCancel());
       return;
     }
 
@@ -492,15 +560,23 @@ class SleepTimerController extends StateNotifier<SleepTimerState> {
     );
 
     _trackSubscription?.cancel();
-    _trackSubscription = audioController.currentTrackStream.listen(
-      (track) {
-        // 当音轨发生变化（切换到下一首或停止）时暂停
-        if (track?.id != initialTrack.id) {
-          audioController.pause();
-          cancelTimer();
-        }
-      },
-    );
+    _trackSubscription = _service.currentTrackStream.listen((track) {
+      // 当音轨发生变化（切换到下一首或停止）时暂停
+      if (track?.id != initialTrack.id) {
+        unawaited(_pauseAndCancel());
+      }
+    });
+  }
+
+  Future<void> _pauseAndCancel() async {
+    // Start pausing synchronously so completion cannot advance the queue.
+    final pausing = Future<void>.sync(pause);
+    cancelTimer();
+    try {
+      await pausing;
+    } catch (error) {
+      _log.captureOutput('[SleepTimer] Failed to pause playback: $error');
+    }
   }
 
   /// 取消定时器
@@ -511,20 +587,20 @@ class SleepTimerController extends StateNotifier<SleepTimerState> {
     _countdownTimer = null;
     _trackSubscription?.cancel();
     _trackSubscription = null;
+    _trackEndSubscription?.cancel();
+    _trackEndSubscription = null;
     state = const SleepTimerState();
   }
 
   /// 添加时间（延长定时器）
   void addTime(Duration duration) {
     if (state.isActive && state.endTime != null) {
-      final newEndTime = state.endTime!.add(duration);
-      final newRemaining = newEndTime.difference(DateTime.now());
+      final now = _now();
+      final baseTime = state.endTime!.isAfter(now) ? state.endTime! : now;
+      final newEndTime = baseTime.add(duration);
 
       // 重新设置定时器，并保持当前的"播完暂停"状态
-      setTimer(
-        newRemaining,
-        finishCurrentTrack: state.finishCurrentTrack,
-      );
+      setTimerUntil(newEndTime, finishCurrentTrack: state.finishCurrentTrack);
     }
   }
 
@@ -533,6 +609,7 @@ class SleepTimerController extends StateNotifier<SleepTimerState> {
     _timer?.cancel();
     _countdownTimer?.cancel();
     _trackSubscription?.cancel();
+    _trackEndSubscription?.cancel();
     super.dispose();
   }
 }
@@ -587,5 +664,8 @@ class SleepTimerState {
 // Sleep Timer Provider
 final sleepTimerProvider =
     StateNotifierProvider<SleepTimerController, SleepTimerState>((ref) {
-  return SleepTimerController(ref);
-});
+      return SleepTimerController(
+        ref.read(audioPlayerServiceProvider),
+        pause: () => ref.read(audioPlayerControllerProvider.notifier).pause(),
+      );
+    });

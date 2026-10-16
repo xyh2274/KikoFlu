@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:real_liquid_glass/real_liquid_glass.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../providers/audio_provider.dart';
@@ -7,6 +8,7 @@ import '../providers/update_provider.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/main_bottom_navigation_bar.dart';
 import '../widgets/mini_player.dart';
+import '../widgets/liquid_glass_layout.dart';
 import 'works_screen.dart';
 import 'search_screen.dart';
 import 'my_screen.dart';
@@ -26,6 +28,7 @@ class _MainScreenState extends ConsumerState<MainScreen> {
 
   // 使用 PageStorageBucket 来保存页面状态
   final PageStorageBucket _bucket = PageStorageBucket();
+  final ValueNotifier<double> _liquidDockExtent = ValueNotifier(0);
 
   late final List<Widget> _screens;
 
@@ -38,6 +41,12 @@ class _MainScreenState extends ConsumerState<MainScreen> {
       MyScreen(key: PageStorageKey('my_screen')),
       SettingsScreen(key: PageStorageKey('settings_screen')),
     ];
+  }
+
+  @override
+  void dispose() {
+    _liquidDockExtent.dispose();
+    super.dispose();
   }
 
   List<NavigationDestination> _buildDestinations(
@@ -92,11 +101,12 @@ class _MainScreenState extends ConsumerState<MainScreen> {
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
     final showUpdateBadge = ref.watch(showUpdateRedDotProvider);
+    final useLiquidGlass = ref.watch(liquidGlassNavigationProvider);
     final destinations = _buildDestinations(context, showUpdateBadge);
 
     if (isLandscape) {
       // 横屏布局：使用 NavigationRail
-      return Scaffold(
+      final landscapeScaffold = Scaffold(
         body: Stack(
           children: [
             // 主内容区域
@@ -112,17 +122,28 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                             MediaQuery.of(context).padding.bottom,
                       ),
                       child: IntrinsicHeight(
-                        child: NavigationRail(
-                          selectedIndex: _currentIndex,
-                          onDestinationSelected: _handleDestinationSelected,
-                          labelType: NavigationRailLabelType.selected,
-                          destinations: destinations
-                              .map((dest) => NavigationRailDestination(
-                                    icon: dest.icon,
-                                    selectedIcon: dest.selectedIcon,
-                                    label: Text(dest.label),
-                                  ))
-                              .toList(),
+                        child: Padding(
+                          padding: useLiquidGlass
+                              ? const EdgeInsets.all(8)
+                              : EdgeInsets.zero,
+                          child: useLiquidGlass
+                              ? Consumer(
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(28),
+                                    child: _buildNavigationRail(destinations),
+                                  ),
+                                  builder: (context, ref, child) {
+                                    return LiquidGlassContainer(
+                                      shape: const LiquidGlassShape
+                                          .roundedRectangle(28),
+                                      fallbackIntensity: ref.watch(
+                                        fallbackGlassTransparencyProvider,
+                                      ),
+                                      child: child,
+                                    );
+                                  },
+                                )
+                              : _buildNavigationRail(destinations),
                         ),
                       ),
                     ),
@@ -138,44 +159,59 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                           !authState.isLoggedIn &&
                           authState.error != null;
 
+                      final pages = PageStorage(
+                        bucket: _bucket,
+                        child: IndexedStack(
+                          index: _currentIndex,
+                          children: List.generate(_screens.length, (index) {
+                            return HeroMode(
+                              enabled: index == _currentIndex,
+                              child: _screens[index],
+                            );
+                          }),
+                        ),
+                      );
+                      final miniPlayer = Consumer(
+                        builder: (context, ref, child) {
+                          final currentTrack = ref.watch(currentTrackProvider);
+                          return currentTrack.when(
+                            data: (track) => track != null
+                                ? const MiniPlayer()
+                                : const SizedBox.shrink(),
+                            loading: () => const SizedBox.shrink(),
+                            error: (_, __) => const SizedBox.shrink(),
+                          );
+                        },
+                      );
+
+                      final content = useLiquidGlass
+                          ? LiquidGlassDockOverlay(
+                              onExtentChanged: (extent) {
+                                if (_liquidDockExtent.value != extent) {
+                                  _liquidDockExtent.value = extent;
+                                }
+                              },
+                              dock: AnimatedSize(
+                                duration: const Duration(milliseconds: 180),
+                                curve: Curves.easeOutCubic,
+                                alignment: Alignment.bottomCenter,
+                                child: miniPlayer,
+                              ),
+                              child: pages,
+                            )
+                          : Column(
+                              children: [
+                                Expanded(child: pages),
+                                miniPlayer,
+                              ],
+                            );
+
                       return Padding(
                         padding: EdgeInsets.only(top: isOfflineMode ? 30 : 0),
                         child: SafeArea(
                           top: false,
-                          child: Column(
-                            children: [
-                              // 主内容
-                              Expanded(
-                                child: PageStorage(
-                                  bucket: _bucket,
-                                  child: IndexedStack(
-                                    index: _currentIndex,
-                                    children:
-                                        List.generate(_screens.length, (index) {
-                                      return HeroMode(
-                                        enabled: index == _currentIndex,
-                                        child: _screens[index],
-                                      );
-                                    }),
-                                  ),
-                                ),
-                              ),
-                              // MiniPlayer
-                              Consumer(
-                                builder: (context, ref, child) {
-                                  final currentTrack =
-                                      ref.watch(currentTrackProvider);
-                                  return currentTrack.when(
-                                    data: (track) => track != null
-                                        ? const MiniPlayer()
-                                        : const SizedBox.shrink(),
-                                    loading: () => const SizedBox.shrink(),
-                                    error: (_, __) => const SizedBox.shrink(),
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
+                          bottom: !useLiquidGlass,
+                          child: content,
                         ),
                       );
                     },
@@ -251,10 +287,49 @@ class _MainScreenState extends ConsumerState<MainScreen> {
           ],
         ),
       );
+      return useLiquidGlass
+          ? LiquidGlassDockScope(
+              notifier: _liquidDockExtent,
+              child: landscapeScaffold,
+            )
+          : landscapeScaffold;
     }
 
-    // 竖屏布局：使用 BottomNavigationBar
-    return Scaffold(
+    // 竖屏布局：液态玻璃模式把导航栏悬浮在页面内容上方，经典模式
+    // 继续使用 Scaffold 的 bottomNavigationBar 插槽。
+    final miniPlayer = Consumer(
+      builder: (context, ref, child) {
+        final currentTrack = ref.watch(currentTrackProvider);
+        return currentTrack.when(
+          data: (track) =>
+              track != null ? const MiniPlayer() : const SizedBox.shrink(),
+          loading: () => const SizedBox.shrink(),
+          error: (_, __) => const SizedBox.shrink(),
+        );
+      },
+    );
+    final bottomNavigation = Consumer(
+      child: miniPlayer,
+      builder: (context, ref, child) {
+        return MainBottomNavigationBar(
+          selectedIndex: _currentIndex,
+          onDestinationSelected: _handleDestinationSelected,
+          destinations: destinations,
+          liquidGlass: useLiquidGlass,
+          fallbackGlassTransparency:
+              ref.watch(fallbackGlassTransparencyProvider),
+          showUpdateBadge: showUpdateBadge,
+          onLayoutExtentChanged: (extent) {
+            if (_liquidDockExtent.value != extent) {
+              _liquidDockExtent.value = extent;
+            }
+          },
+          miniPlayer: child!,
+        );
+      },
+    );
+
+    final portraitScaffold = Scaffold(
       body: Stack(
         children: [
           // 主内容
@@ -269,16 +344,19 @@ class _MainScreenState extends ConsumerState<MainScreen> {
                 padding: EdgeInsets.only(top: isOfflineMode ? 30 : 0),
                 child: SafeArea(
                   top: false,
-                  child: PageStorage(
-                    bucket: _bucket,
-                    child: IndexedStack(
-                      index: _currentIndex,
-                      children: List.generate(_screens.length, (index) {
-                        return HeroMode(
-                          enabled: index == _currentIndex,
-                          child: _screens[index],
-                        );
-                      }),
+                  bottom: false,
+                  child: LiquidGlassDockMediaQuery(
+                    child: PageStorage(
+                      bucket: _bucket,
+                      child: IndexedStack(
+                        index: _currentIndex,
+                        children: List.generate(_screens.length, (index) {
+                          return HeroMode(
+                            enabled: index == _currentIndex,
+                            child: _screens[index],
+                          );
+                        }),
+                      ),
                     ),
                   ),
                 ),
@@ -350,24 +428,37 @@ class _MainScreenState extends ConsumerState<MainScreen> {
               },
             ),
           ),
+          if (useLiquidGlass)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: bottomNavigation,
+            ),
         ],
       ),
-      bottomNavigationBar: MainBottomNavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: _handleDestinationSelected,
-        destinations: destinations,
-        miniPlayer: Consumer(
-          builder: (context, ref, child) {
-            final currentTrack = ref.watch(currentTrackProvider);
-            return currentTrack.when(
-              data: (track) =>
-                  track != null ? const MiniPlayer() : const SizedBox.shrink(),
-              loading: () => const SizedBox.shrink(),
-              error: (_, __) => const SizedBox.shrink(),
-            );
-          },
-        ),
-      ),
+      bottomNavigationBar: useLiquidGlass ? null : bottomNavigation,
+    );
+    return useLiquidGlass
+        ? LiquidGlassDockScope(
+            notifier: _liquidDockExtent,
+            child: portraitScaffold,
+          )
+        : portraitScaffold;
+  }
+
+  Widget _buildNavigationRail(List<NavigationDestination> destinations) {
+    return NavigationRail(
+      selectedIndex: _currentIndex,
+      onDestinationSelected: _handleDestinationSelected,
+      labelType: NavigationRailLabelType.selected,
+      destinations: destinations
+          .map((dest) => NavigationRailDestination(
+                icon: dest.icon,
+                selectedIcon: dest.selectedIcon,
+                label: Text(dest.label),
+              ))
+          .toList(),
     );
   }
 }

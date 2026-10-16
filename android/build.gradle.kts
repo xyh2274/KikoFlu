@@ -2,10 +2,10 @@ import com.android.build.gradle.BaseExtension
 
 allprojects {
     repositories {
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/central")
         google()
         mavenCentral()
-        maven("https://maven.aliyun.com/repository/central")
-        maven("https://maven.aliyun.com/repository/google")
     }
 }
 

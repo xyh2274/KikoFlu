@@ -9,7 +9,6 @@ import '../../l10n/app_localizations.dart';
 import '../models/work.dart';
 import '../providers/auth_provider.dart';
 import '../widgets/scrollable_appbar.dart';
-import '../services/storage_service.dart';
 import '../services/work_track_file_builder.dart';
 import '../utils/system_ui_style.dart';
 import '../widgets/file_explorer_widget.dart';
@@ -38,11 +37,13 @@ import '../widgets/image_gallery_screen.dart';
 class WorkDetailScreen extends ConsumerStatefulWidget {
   final Work work;
   final String? heroTag;
+  final ImageProvider<Object>? initialCoverImageProvider;
 
   const WorkDetailScreen({
     super.key,
     required this.work,
     this.heroTag,
+    this.initialCoverImageProvider,
   });
 
   @override
@@ -59,11 +60,24 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
   bool _isUpdatingProgress = false; // 是否正在更新状态
   bool _isOpeningFileSelection = false; // iOS上防止快速重复点击造成对话框立即关闭
   bool _isOpeningProgressDialog = false; // 防止标记状态对话框重复快速打开
+  final FileExplorerController _fileExplorerController =
+      FileExplorerController();
 
   // 翻译相关状态
   String? _translatedTitle; // 翻译后的标题
   bool _showTranslation = false; // 是否显示翻译
   bool _isTranslating = false; // 是否正在翻译
+
+  Future<void> _restoreMiniPlayerAfterModalExit(VoidCallback clearFlag) async {
+    // A pushed route's Future completes when pop starts, before its reverse
+    // transition leaves the overlay. Keep native glass suppressed until then.
+    await Future<void>.delayed(kThemeAnimationDuration);
+    if (mounted) {
+      setState(clearFlag);
+    } else {
+      clearFlag();
+    }
+  }
 
   @override
   void initState() {
@@ -248,41 +262,48 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
   Future<void> _showFileSelectionDialog() async {
     // 防抖: 避免 iOS 上快速双击导致同一路由被重复创建又立即被关闭
     if (_isOpeningFileSelection) return;
-    _isOpeningFileSelection = true;
+    setState(() => _isOpeningFileSelection = true);
 
     final preparedWorkFuture = _prepareWorkForFileSelection();
 
     try {
-      await showDialog<void>(
+      await showResponsiveBottomSheet<void>(
         context: context,
-        barrierDismissible: false,
+        maxHeight: MediaQuery.of(context).size.height * 0.9,
         builder: (dialogContext) {
           return FutureBuilder<Work>(
             future: preparedWorkFuture,
             builder: (context, snapshot) {
               if (snapshot.connectionState != ConnectionState.done) {
-                return ResponsiveAlertDialog(
-                  content: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const CircularProgressIndicator(),
-                      const SizedBox(height: 16),
-                      Text(S.of(context).loadingFileList),
-                    ],
+                return SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 16),
+                        Text(S.of(context).loadingFileList),
+                      ],
+                    ),
                   ),
                 );
               }
 
               if (snapshot.hasError) {
-                return ResponsiveAlertDialog(
-                  title: Text(S.of(context).loadFailed),
-                  content: Text(S
-                      .of(context)
-                      .loadFileListFailed(snapshot.error.toString())),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: Text(S.of(context).close),
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    BottomSheetHeader(
+                      title: S.of(context).loadFailed,
+                    ),
+                    const Divider(height: 1),
+                    Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(S
+                          .of(context)
+                          .loadFileListFailed(snapshot.error.toString())),
                     ),
                   ],
                 );
@@ -295,7 +316,9 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
         },
       );
     } finally {
-      _isOpeningFileSelection = false;
+      await _restoreMiniPlayerAfterModalExit(
+        () => _isOpeningFileSelection = false,
+      );
     }
   }
 
@@ -347,13 +370,12 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
 
       final apiService = ref.read(kikoeruApiServiceProvider);
 
-      // 先清除缓存，确保获取最新数据
-      final prefs = await StorageService.getPrefs();
-      await prefs.remove('work_detail_${widget.work.id}');
-      await prefs.remove('work_detail_time_${widget.work.id}');
-
-      // 从网络获取最新数据
-      final response = await apiService.getWork(widget.work.id);
+      // 元数据和文件树都必须绕过缓存，并等待两者完成后再报告刷新成功。
+      final refreshResults = await Future.wait<dynamic>([
+        apiService.getWork(widget.work.id, forceRefresh: true),
+        _fileExplorerController.refresh(forceRefresh: true),
+      ]);
+      final response = refreshResults.first as Map<String, dynamic>;
       final detailedWork = Work.fromJson(response);
 
       if (mounted) {
@@ -388,28 +410,32 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
   // 显示收藏状态选择对话框
   Future<void> _showProgressDialog() async {
     if (_isOpeningProgressDialog) return; // 防抖避免 iOS 双击导致立即关闭
-    _isOpeningProgressDialog = true;
+    setState(() => _isOpeningProgressDialog = true);
 
     final manager = WorkBookmarkManager(ref: ref, context: context);
 
-    await manager.showMarkDialog(
-      workId: widget.work.id,
-      currentProgress: _currentProgress,
-      currentRating: _currentRating,
-      workTitle: widget.work.title,
-      onChanged: (newProgress, newRating) {
-        // 更新本地状态
-        if (mounted) {
-          setState(() {
-            _currentProgress = newProgress;
-            _currentRating = newRating;
-            _isUpdatingProgress = false;
-          });
-        }
-      },
-    );
-
-    _isOpeningProgressDialog = false;
+    try {
+      await manager.showMarkDialog(
+        workId: widget.work.id,
+        currentProgress: _currentProgress,
+        currentRating: _currentRating,
+        workTitle: widget.work.title,
+        onChanged: (newProgress, newRating) {
+          // 更新本地状态
+          if (mounted) {
+            setState(() {
+              _currentProgress = newProgress;
+              _currentRating = newRating;
+              _isUpdatingProgress = false;
+            });
+          }
+        },
+      );
+    } finally {
+      await _restoreMiniPlayerAfterModalExit(
+        () => _isOpeningProgressDialog = false,
+      );
+    }
   }
 
   // 显示评分详情弹窗
@@ -437,6 +463,8 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
     final systemOverlayStyle = transparentSystemBarsForBrightness(brightness);
 
     return GlobalAudioPlayerWrapper(
+      suppressLiquidGlassMiniPlayer:
+          _isOpeningFileSelection || _isOpeningProgressDialog,
       child: Scaffold(
         floatingActionButton: const DownloadFab(),
         appBar: ScrollableAppBar(
@@ -485,9 +513,9 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
     // 封面图片组件
     final effectiveHeroTag = widget.heroTag ?? 'work_cover_${widget.work.id}';
     final coverUrl = work.getCoverImageUrl(host, token: token);
+    final displaySettings = ref.watch(workDetailDisplayProvider);
     final showSubtitleBadge =
-        ref.watch(workDetailDisplayProvider).showSubtitleTag &&
-            work.hasSubtitle == true;
+        displaySettings.showSubtitleTag && work.hasSubtitle == true;
 
     // 信息内容组件
     final infoWidget = Padding(
@@ -583,7 +611,10 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
           ),
 
           // 文件浏览器组件 - 移除固定高度，让它自由展开
-          FileExplorerWidget(work: work),
+          FileExplorerWidget(
+            work: work,
+            controller: _fileExplorerController,
+          ),
 
           // 相关推荐
           RecommendationSection(work: work),
@@ -598,7 +629,9 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
           heroTag: effectiveHeroTag,
           isLandscape: isLandscape,
           showSubtitleBadge: showSubtitleBadge,
-          onLongPress: () {
+          showAgeRating: displaySettings.showAgeRating,
+          age: work.age,
+          onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (context) => ImageGalleryScreen(
@@ -619,22 +652,11 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
               imageUrl: coverUrl,
               cacheKey: 'work_cover_${widget.work.id}',
               fit: BoxFit.contain,
-              placeholder: (context, url) => Container(
-                height: 300,
-                color: Colors.grey[300],
-                child: const Center(
-                  child: CircularProgressIndicator(),
-                ),
-              ),
-              errorWidget: (context, url, error) => Container(
-                height: 300,
-                color: Colors.grey[300],
-                child: const Icon(
-                  Icons.image_not_supported,
-                  size: 64,
-                  color: Colors.grey,
-                ),
-              ),
+              placeholder: (context, url) => _buildCoverPlaceholder(),
+              errorWidget: (context, url, error) => _buildCoverPlaceholder(),
+              fadeInDuration: Duration.zero,
+              fadeOutDuration: Duration.zero,
+              placeholderFadeInDuration: Duration.zero,
             ),
             if (_showHDImage && _hdImageProvider != null)
               Image(
@@ -648,6 +670,33 @@ class _WorkDetailScreenState extends ConsumerState<WorkDetailScreen> {
         );
       },
       info: infoWidget,
+    );
+  }
+
+  Widget _buildCoverPlaceholder() {
+    final initialCover = widget.initialCoverImageProvider;
+    if (initialCover != null) {
+      return Image(
+        image: initialCover,
+        fit: BoxFit.contain,
+        gaplessPlayback: true,
+        errorBuilder: (context, error, stackTrace) =>
+            _buildMissingCoverPlaceholder(),
+      );
+    }
+    return _buildMissingCoverPlaceholder();
+  }
+
+  Widget _buildMissingCoverPlaceholder() {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      height: 300,
+      color: colorScheme.surfaceContainerHighest,
+      child: Icon(
+        Icons.image_not_supported,
+        size: 64,
+        color: colorScheme.onSurfaceVariant,
+      ),
     );
   }
 }

@@ -1,5 +1,13 @@
 # KikoFlu 下载缓存优化整合方案
 
+> ⚠️ **状态更新（2026-09-13，防止重复造轮子）**：下表为立项时的核验结论，**已过时**。
+> O1 / O2 / O3 / O4 / O6 / O7 / O8 / O9 / O10 已在 commit `076ed6c` 全部实现
+> （`download_service.dart` / `cache_service.dart` / `settings_screen.dart` 内以 "O1"–"O10" 注释标注，
+> 并有 `StorageSpaceService`（FFI 查询磁盘空间）支撑）。
+> 仅 **O5 下载完成通知只接线了调用点**（`download_service.dart` 3 处），`NotificationService` 仍是
+> 占位空壳（TODO flutter_local_notifications / permission_handler，目前只打日志不弹通知）。
+> 另有仓库外遗留优化项见 `CONTEXT.md`（补充下载对比串行、历史页瀑布流等）。请勿按本文档重复实现。
+
 > 基于本地下载缓存优化资源（参照 `d:\MyBlog\kikoeru\README.md` 及 `kikoeru-optimized-source.zip`）梳理。
 > 本方案为 Flutter/Riverpod 技术栈下的**优化点移植**，本地原生 Java（`com.zinhao.kikoeru`）源码仅作逻辑蓝本，不直接搬用。
 

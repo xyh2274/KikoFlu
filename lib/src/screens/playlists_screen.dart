@@ -4,14 +4,21 @@ import '../../l10n/app_localizations.dart';
 import '../providers/playlists_provider.dart';
 import '../providers/auth_provider.dart';
 import '../utils/l10n_extensions.dart';
-import '../utils/scroll_optimization.dart';
 import '../widgets/playlist_card.dart';
-import '../widgets/pagination_bar.dart';
+import '../widgets/virtualized_sliver_collection.dart';
+import '../utils/scroll_optimization.dart';
 import '../models/playlist.dart' show PlaylistPrivacy;
+import '../widgets/responsive_dialog.dart';
+import '../widgets/settings_option_dialog.dart';
 import 'playlist_detail_screen.dart';
 
 class PlaylistsScreen extends ConsumerStatefulWidget {
-  const PlaylistsScreen({super.key});
+  const PlaylistsScreen({
+    super.key,
+    this.topInset = 0,
+  });
+
+  final double topInset;
 
   @override
   ConsumerState<PlaylistsScreen> createState() => _PlaylistsScreenState();
@@ -42,16 +49,6 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
     super.dispose();
   }
 
-  void _scrollToTop() {
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        0,
-        duration: const Duration(milliseconds: 500),
-        curve: Curves.easeInOut,
-      );
-    }
-  }
-
   /// 显示创建播放列表对话框
   Future<void> _showCreatePlaylistDialog() async {
     final nameController = TextEditingController();
@@ -62,201 +59,156 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
 
     final result = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) {
-        final isLandscape =
-            MediaQuery.of(dialogContext).orientation == Orientation.landscape;
-        final screenWidth = MediaQuery.of(dialogContext).size.width;
-        final dialogWidth = isLandscape ? screenWidth * 0.6 : screenWidth * 0.9;
-
-        return StatefulBuilder(
-          builder: (context, setDialogState) => Dialog(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: dialogWidth.clamp(300.0, 600.0),
-                maxHeight: MediaQuery.of(context).size.height * 0.85,
-              ),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // 标题栏
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
-                      child: Row(
-                        children: [
-                          Text(
-                            isCreateMode
-                                ? S.of(context).createPlaylist
-                                : S.of(context).addPlaylist,
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                        ],
-                      ),
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final colorScheme = Theme.of(context).colorScheme;
+          return ResponsiveDialog(
+            maxWidth: 600,
+            titlePadding: const EdgeInsets.fromLTRB(20, 14, 8, 0),
+            contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            title: Row(
+              children: [
+                Icon(
+                  isCreateMode ? Icons.playlist_add : Icons.link,
+                  size: 22,
+                  color: colorScheme.primary,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    isCreateMode
+                        ? S.of(context).createPlaylist
+                        : S.of(context).addPlaylist,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
                     ),
-
-                    // 模式切换
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: SegmentedButton<bool>(
-                        segments: [
-                          ButtonSegment<bool>(
-                            value: true,
-                            label: Text(S.of(context).create),
-                            icon: const Icon(Icons.add),
-                          ),
-                          ButtonSegment<bool>(
-                            value: false,
-                            label: Text(S.of(context).add),
-                            icon: const Icon(Icons.link),
-                          ),
-                        ],
-                        selected: {isCreateMode},
-                        onSelectionChanged: (Set<bool> selected) {
-                          setDialogState(() {
-                            isCreateMode = selected.first;
-                          });
-                        },
-                      ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  icon: const Icon(Icons.close),
+                  tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SegmentedButton<bool>(
+                  segments: [
+                    ButtonSegment<bool>(
+                      value: true,
+                      label: Text(S.of(context).create),
+                      icon: const Icon(Icons.add),
                     ),
-                    const SizedBox(height: 16),
-
-                    // 内容区域
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: isCreateMode
-                            ? [
-                                // 创建模式的输入框
-                                // 名称输入
-                                TextField(
-                                  controller: nameController,
-                                  decoration: InputDecoration(
-                                    labelText: S.of(context).playlistName,
-                                    hintText: S.of(context).enterPlaylistName,
-                                    border: const OutlineInputBorder(),
-                                    prefixIcon: const Icon(Icons.title),
-                                  ),
-                                  autofocus: true,
-                                  maxLength: 50,
-                                ),
-                                const SizedBox(height: 16),
-
-                                // 隐私设置
-                                DropdownButtonFormField<PlaylistPrivacy>(
-                                  initialValue: selectedPrivacy,
-                                  decoration: InputDecoration(
-                                    labelText: S.of(context).privacySetting,
-                                    border: const OutlineInputBorder(),
-                                    prefixIcon: const Icon(Icons.lock_outline),
-                                    helperText: selectedPrivacy
-                                        .localizedDescription(context),
-                                    helperMaxLines: 2,
-                                  ),
-                                  items: PlaylistPrivacy.values.map((privacy) {
-                                    return DropdownMenuItem<PlaylistPrivacy>(
-                                      value: privacy,
-                                      child:
-                                          Text(privacy.localizedLabel(context)),
-                                    );
-                                  }).toList(),
-                                  onChanged: (value) {
-                                    if (value != null) {
-                                      setDialogState(() {
-                                        selectedPrivacy = value;
-                                      });
-                                    }
-                                  },
-                                ),
-                                const SizedBox(height: 16),
-
-                                // 描述输入
-                                TextField(
-                                  controller: descriptionController,
-                                  decoration: InputDecoration(
-                                    labelText:
-                                        S.of(context).playlistDescription,
-                                    hintText: S.of(context).addDescription,
-                                    border: const OutlineInputBorder(),
-                                    prefixIcon: const Icon(Icons.description),
-                                  ),
-                                  maxLines: 1,
-                                  maxLength: 200,
-                                ),
-                                const SizedBox(height: 8),
-                              ]
-                            : [
-                                // 添加链接模式的输入框
-                                TextField(
-                                  controller: linkController,
-                                  decoration: InputDecoration(
-                                    labelText: S.of(context).playlistLink,
-                                    hintText: S.of(context).playlistLinkHint,
-                                    border: const OutlineInputBorder(),
-                                    prefixIcon: const Icon(Icons.link),
-                                  ),
-                                  autofocus: true,
-                                  maxLines: 3,
-                                ),
-                                const SizedBox(height: 8),
-                              ],
-                      ),
-                    ),
-
-                    // 操作按钮
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, false),
-                            child: Text(S.of(context).cancel),
-                          ),
-                          const SizedBox(width: 8),
-                          FilledButton(
-                            onPressed: () {
-                              if (isCreateMode) {
-                                if (nameController.text.trim().isEmpty) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(S
-                                          .of(context)
-                                          .enterPlaylistNameWarning),
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                  return;
-                                }
-                              } else {
-                                if (linkController.text.trim().isEmpty) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content:
-                                          Text(S.of(context).enterPlaylistLink),
-                                      behavior: SnackBarBehavior.floating,
-                                    ),
-                                  );
-                                  return;
-                                }
-                              }
-                              Navigator.pop(context, true);
-                            },
-                            child: Text(isCreateMode
-                                ? S.of(context).create
-                                : S.of(context).add),
-                          ),
-                        ],
-                      ),
+                    ButtonSegment<bool>(
+                      value: false,
+                      label: Text(S.of(context).add),
+                      icon: const Icon(Icons.link),
                     ),
                   ],
+                  selected: {isCreateMode},
+                  onSelectionChanged: (Set<bool> selected) {
+                    setDialogState(() => isCreateMode = selected.first);
+                  },
+                ),
+                const SizedBox(height: 16),
+                if (isCreateMode) ...[
+                  TextField(
+                    controller: nameController,
+                    decoration: settingsDialogInputDecoration(
+                      context,
+                      labelText: S.of(context).playlistName,
+                      hintText: S.of(context).enterPlaylistName,
+                      prefixIcon: const Icon(Icons.title),
+                    ),
+                    autofocus: true,
+                    maxLength: 50,
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<PlaylistPrivacy>(
+                    initialValue: selectedPrivacy,
+                    decoration: settingsDialogInputDecoration(
+                      context,
+                      labelText: S.of(context).privacySetting,
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      helperText: selectedPrivacy.localizedDescription(context),
+                      helperMaxLines: 2,
+                    ),
+                    items: PlaylistPrivacy.values.map((privacy) {
+                      return DropdownMenuItem<PlaylistPrivacy>(
+                        value: privacy,
+                        child: Text(privacy.localizedLabel(context)),
+                      );
+                    }).toList(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() => selectedPrivacy = value);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: descriptionController,
+                    decoration: settingsDialogInputDecoration(
+                      context,
+                      labelText: S.of(context).playlistDescription,
+                      hintText: S.of(context).addDescription,
+                      prefixIcon: const Icon(Icons.description),
+                    ),
+                    maxLines: 1,
+                    maxLength: 200,
+                  ),
+                ] else
+                  TextField(
+                    controller: linkController,
+                    decoration: settingsDialogInputDecoration(
+                      context,
+                      labelText: S.of(context).playlistLink,
+                      hintText: S.of(context).playlistLinkHint,
+                      prefixIcon: const Icon(Icons.link),
+                    ),
+                    autofocus: true,
+                    maxLines: 3,
+                  ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: Text(S.of(context).cancel),
+              ),
+              FilledButton(
+                onPressed: () {
+                  if (isCreateMode && nameController.text.trim().isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(S.of(context).enterPlaylistNameWarning),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                    return;
+                  }
+                  if (!isCreateMode && linkController.text.trim().isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(S.of(context).enterPlaylistLink),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                    return;
+                  }
+                  Navigator.pop(dialogContext, true);
+                },
+                child: Text(
+                  isCreateMode ? S.of(context).create : S.of(context).add,
                 ),
               ),
-            ),
-          ),
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
 
     // 先保存值，再释放 controller
@@ -292,10 +244,14 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
 
       // 支持多种链接格式（不限域名）
       final patterns = [
-        RegExp(r'playlist\?id=([a-f0-9-]+)',
-            caseSensitive: false), // 匹配 ?id= 参数
-        RegExp(r'playlist/([a-f0-9-]+)',
-            caseSensitive: false), // 匹配 /playlist/ 路径
+        RegExp(
+          r'playlist\?id=([a-f0-9-]+)',
+          caseSensitive: false,
+        ), // 匹配 ?id= 参数
+        RegExp(
+          r'playlist/([a-f0-9-]+)',
+          caseSensitive: false,
+        ), // 匹配 /playlist/ 路径
         RegExp(r'^([a-f0-9-]+)$', caseSensitive: false), // 直接输入 ID
       ];
 
@@ -376,9 +332,13 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
           errorString.contains('connect')) {
         errorMessage = S.of(context).networkConnectionFailed;
       } else {
-        errorMessage = S.of(context).addFailedWithError(errorString.length > 50
-            ? '${errorString.substring(0, 50)}...'
-            : errorString);
+        errorMessage = S
+            .of(context)
+            .addFailedWithError(
+              errorString.length > 50
+                  ? '${errorString.substring(0, 50)}...'
+                  : errorString,
+            );
       }
 
       // 显示错误提示
@@ -465,7 +425,6 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
 
     final state = ref.watch(playlistsProvider);
 
-    // 错误状态
     if (state.error != null && state.playlists.isEmpty) {
       return Center(
         child: Column(
@@ -485,8 +444,8 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
             Text(
               state.error!,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 24),
@@ -500,14 +459,10 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
       );
     }
 
-    // 加载中且无数据
     if (state.isLoading && state.playlists.isEmpty) {
-      return const Center(
-        child: CircularProgressIndicator(),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
-    // 空状态
     if (state.playlists.isEmpty) {
       return Scaffold(
         floatingActionButton: FloatingActionButton(
@@ -533,8 +488,8 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
               Text(
                 S.of(context).noPlaylistsDescription,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
                 textAlign: TextAlign.center,
               ),
             ],
@@ -550,21 +505,40 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
         child: const Icon(Icons.add),
       ),
       body: RefreshIndicator(
-        onRefresh: () async => ref.read(playlistsProvider.notifier).refresh(),
+        onRefresh: ref.read(playlistsProvider.notifier).refresh,
         child: _buildListView(state),
       ),
     );
   }
 
   Widget _buildListView(PlaylistsState state) {
-    return CustomScrollView(
+    return VirtualizedSliverCollection(
       controller: _scrollController,
-      cacheExtent: ScrollOptimization.cacheExtent,
+      items: state.playlists,
+      itemId: (playlist) => playlist.id,
       physics: ScrollOptimization.physics,
-      slivers: [
-        // 顶部标题栏
+      isInitialLoading: state.isLoading && state.playlists.isEmpty,
+      isRefreshing: false,
+      isLoadingMore: state.isLoadingMore,
+      hasMore: state.hasMore,
+      error: null,
+      loadMoreError: null,
+      pagination: VirtualizedPagination(
+        currentPage: state.currentPage,
+        pageSize: state.pageSize,
+        totalCount: state.totalCount,
+        hasMore: state.hasMore,
+        isLoading: state.isLoading || state.isRefreshing,
+        onPreviousPage: ref.read(playlistsProvider.notifier).previousPage,
+        onNextPage: ref.read(playlistsProvider.notifier).nextPage,
+        onGoToPage: ref.read(playlistsProvider.notifier).goToPage,
+        scrollDuration: const Duration(milliseconds: 500),
+        scrollCurve: Curves.easeInOut,
+      ),
+      onRetry: ref.read(playlistsProvider.notifier).refresh,
+      sliversBefore: [
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          padding: EdgeInsets.fromLTRB(16, widget.topInset + 16, 16, 8),
           sliver: SliverToBoxAdapter(
             child: Row(
               children: [
@@ -577,78 +551,40 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen>
                 Text(
                   S.of(context).myPlaylists,
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
-                      ),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
                 ),
                 const Spacer(),
                 Text(
                   S.of(context).totalNItems(state.totalCount),
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
           ),
         ),
-
-        // 播放列表列表
-        SliverList(
-          delegate: SliverChildBuilderDelegate(
-            (context, index) {
-              final playlist = state.playlists[index];
-              return RepaintBoundary(
-                child: PlaylistCard(
-                  playlist: playlist,
-                  onTap: () async {
-                    // 导航到播放列表详情页
-                    final deleted = await Navigator.of(context).push<bool>(
-                      MaterialPageRoute(
-                        builder: (context) => PlaylistDetailScreen(
-                          playlistId: playlist.id,
-                          playlistName: playlist.displayName,
-                        ),
-                      ),
-                    );
-                    // 如果在详情页中删除了播放列表，刷新列表
-                    if (deleted == true) {
-                      ref.read(playlistsProvider.notifier).refresh();
-                    }
-                  },
-                ),
-              );
-            },
-            childCount: state.playlists.length,
-          ),
-        ),
-
-        // 分页控件
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(8, 8, 8, 24),
-          sliver: SliverToBoxAdapter(
-            child: PaginationBar(
-              currentPage: state.currentPage,
-              totalCount: state.totalCount,
-              pageSize: state.pageSize,
-              hasMore: state.hasMore,
-              isLoading: state.isLoading,
-              onPreviousPage: () {
-                ref.read(playlistsProvider.notifier).previousPage();
-                _scrollToTop();
-              },
-              onNextPage: () {
-                ref.read(playlistsProvider.notifier).nextPage();
-                _scrollToTop();
-              },
-              onGoToPage: (page) {
-                ref.read(playlistsProvider.notifier).goToPage(page);
-                _scrollToTop();
-              },
-            ),
-          ),
-        ),
       ],
+      padding: EdgeInsets.zero,
+      itemBuilder: (context, playlist, index) => PlaylistCard(
+        key: ValueKey(playlist.id),
+        playlist: playlist,
+        onTap: () async {
+          final deleted = await Navigator.of(context).push<bool>(
+            MaterialPageRoute(
+              builder: (context) => PlaylistDetailScreen(
+                playlistId: playlist.id,
+                playlistName: playlist.displayName,
+              ),
+            ),
+          );
+          if (deleted == true) {
+            ref.read(playlistsProvider.notifier).refresh();
+          }
+        },
+      ),
     );
   }
 }

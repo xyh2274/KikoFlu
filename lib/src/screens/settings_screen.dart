@@ -22,13 +22,15 @@ import '../providers/update_provider.dart';
 import '../providers/floating_lyric_provider.dart';
 import '../services/cache_service.dart';
 import '../services/download_service.dart';
-import '../services/network_proxy_service.dart';
 import '../services/translation_service.dart';
 import '../utils/snackbar_util.dart';
+import '../utils/ui_tokens.dart';
 import '../widgets/scrollable_appbar.dart';
 import '../widgets/download_fab.dart';
-import '../widgets/radio_option_group.dart';
 import '../widgets/settings_section.dart';
+import '../widgets/liquid_glass_layout.dart';
+import '../widgets/radio_option_group.dart';
+import '../widgets/settings_option_dialog.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -109,15 +111,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     // 监听缓存刷新触发器（只在 build 中设置一次监听）
-    ref.listen<int>(
-      settingsCacheRefreshTriggerProvider,
-      (_, __) {
-        _updateCacheSize();
-      },
-    );
+    ref.listen<int>(settingsCacheRefreshTriggerProvider, (_, __) {
+      _updateCacheSize();
+    });
 
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
+    final dockExtent = LiquidGlassDockScope.extentOf(context);
     final cards = [
       _buildAccountCard(context),
       _buildDownloadAndCacheCard(context),
@@ -127,13 +127,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     return Scaffold(
       floatingActionButton: const DownloadFab(),
       appBar: ScrollableAppBar(
-        title: Text(S.of(context).settingsTitle,
-            style: const TextStyle(fontSize: 18)),
+        title: Text(S.of(context).settingsTitle, style: UiTextStyles.pageTitle),
       ),
       body: isLandscape
-          ? _buildLandscapeLayout(cards)
+          ? _buildLandscapeLayout(cards, dockExtent: dockExtent)
           : ListView.separated(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + dockExtent),
               itemBuilder: (context, index) => cards[index],
               separatorBuilder: (context, index) => const SizedBox(height: 16),
               itemCount: cards.length,
@@ -141,7 +140,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Widget _buildLandscapeLayout(List<Widget> cards) {
+  Widget _buildLandscapeLayout(
+    List<Widget> cards, {
+    required double dockExtent,
+  }) {
     final column1 = <Widget>[];
     final column2 = <Widget>[];
 
@@ -161,7 +163,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + dockExtent),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -214,9 +216,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             );
           },
         ),
-        // 显示悬浮字幕 (Android & Windows & macOS & iOS)
+        // 显示悬浮字幕 (Android & Windows & Linux & macOS & iOS)
         if (Platform.isAndroid ||
             Platform.isWindows ||
+            Platform.isLinux ||
             Platform.isMacOS ||
             Platform.isIOS)
           _buildFloatingLyricTile(context),
@@ -285,7 +288,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               );
             },
           ),
-          if (Platform.isAndroid) ...[
+          if (Platform.isAndroid ||
+              Platform.isWindows ||
+              Platform.isLinux ||
+              Platform.isMacOS) ...[
             const SettingsDivider(),
             _buildFloatingLyricTouchTile(context),
           ],
@@ -300,18 +306,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  /// 悬浮字幕触摸开关（仅 Android）
+  /// 悬浮字幕交互开关。移动端控制长按锁定，桌面端控制点击穿透。
   Widget _buildFloatingLyricTouchTile(BuildContext context) {
     final touchEnabled = ref.watch(floatingLyricTouchEnabledProvider);
+    final l10n = S.of(context);
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
     return SettingsSwitchTile(
       secondary: const SizedBox(width: 24),
-      title: S.of(context).floatingLyricTouch,
-      subtitle: touchEnabled
-          ? S.of(context).floatingLyricTouchEnabled
-          : S.of(context).floatingLyricTouchDisabled,
+      title: isDesktop
+          ? l10n.floatingLyricClickThrough
+          : l10n.floatingLyricTouch,
+      subtitle: isDesktop
+          ? touchEnabled
+                ? l10n.floatingLyricClickThroughDisabled
+                : l10n.floatingLyricClickThroughEnabled
+          : touchEnabled
+          ? l10n.floatingLyricTouchEnabled
+          : l10n.floatingLyricTouchDisabled,
       value: !touchEnabled,
-      onChanged: (value) async {
-        await ref.read(floatingLyricTouchEnabledProvider.notifier).toggle();
+      onChanged: (clickThroughEnabled) async {
+        await ref
+            .read(floatingLyricTouchEnabledProvider.notifier)
+            .setEnabled(!clickThroughEnabled);
       },
     );
   }
@@ -334,8 +351,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   /// 悬浮窗网速显示开关（仅 iOS）
   Widget _buildFloatingNetworkSpeedTile(BuildContext context) {
-    final networkSpeedEnabled =
-        ref.watch(floatingLyricNetworkSpeedEnabledProvider);
+    final networkSpeedEnabled = ref.watch(
+      floatingLyricNetworkSpeedEnabledProvider,
+    );
     return SettingsSwitchTile(
       secondary: const SizedBox(width: 24),
       title: S.of(context).floatingNetworkSpeed,
@@ -352,6 +370,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Widget _buildDownloadAndCacheCard(BuildContext context) {
+    final concurrent = ref.watch(downloadConcurrencyProvider);
     return SettingsSectionList(
       children: [
         SettingsNavigationTile(
@@ -366,6 +385,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             );
           },
         ),
+        SettingsListTile(
+          icon: Icons.format_list_numbered,
+          title: S.of(context).maxConcurrentDownloads,
+          subtitle: S.of(context).maxConcurrentDownloadsValue(concurrent),
+          onTap: () => _showDownloadConcurrencyPicker(context),
+        ),
         SettingsNavigationTile(
           icon: Icons.storage,
           title: S.of(context).cacheManagement,
@@ -374,82 +399,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ),
         SettingsListTile(
           icon: Icons.download_for_offline_outlined,
-          title: '从原 kikoeru 导入',
-          subtitle: '将旧版 kikoeru 下载的音声迁移到 KikoFlu',
+          title: '从本地导入',
+          subtitle: '将本地音声文件夹导入本应用',
           onTap: () => _importFromLegacyKikoeru(context),
-        ),
-        SettingsListTile(
-          icon: Icons.vpn_key,
-          title: '网络代理',
-          subtitle: NetworkProxyService.proxyConfig.isEmpty
-              ? '直连（服务器被墙时可配置，如 10.0.2.2:7897）'
-              : '当前: ${NetworkProxyService.proxyConfig}',
-          onTap: () => _configureNetworkProxy(context),
         ),
       ],
     );
-  }
-
-  Future<void> _configureNetworkProxy(BuildContext context) async {
-    final controller =
-        TextEditingController(text: NetworkProxyService.proxyConfig);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('网络代理设置'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '服务器需要代理访问时配置，格式 host:port。'
-              'MuMu 模拟器访问宿主机代理填 10.0.2.2:7897，'
-              '真机填宿主机局域网 IP:7897。留空则直连。',
-              style: TextStyle(fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: TextInputType.text,
-              decoration: const InputDecoration(
-                hintText: '如 10.0.2.2:7897',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text(S.of(ctx).cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
-
-    controller.dispose();
-    if (result == null || !mounted) return;
-
-    final trimmed = result.trim();
-    if (trimmed.isNotEmpty && NetworkProxyService.parseProxy(trimmed) == null) {
-      _showSnackBar(const SnackBar(
-        content: Text('代理格式无效，应为 host:port'),
-        backgroundColor: Colors.red,
-      ));
-      return;
-    }
-
-    await NetworkProxyService.setProxyConfig(trimmed);
-    if (!mounted) return;
-    _showSnackBar(const SnackBar(
-      content: Text('代理已保存，重启应用后生效'),
-    ));
-    setState(() {});
   }
 
   void _showLanguagePicker(BuildContext context, WidgetRef ref) {
@@ -459,36 +414,59 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       (S.of(context).languageZh, const Locale('zh')),
       (
         S.of(context).languageZhTw,
-        const Locale.fromSubtags(languageCode: 'zh', scriptCode: 'Hant')
+        const Locale.fromSubtags(languageCode: 'zh', scriptCode: 'Hant'),
       ),
       (S.of(context).languageEn, const Locale('en')),
       (S.of(context).languageJa, const Locale('ja')),
       (S.of(context).languageRu, const Locale('ru')),
     ];
-    final selectedIndex = options.indexWhere((option) =>
-        option.$2?.languageCode == currentLocale?.languageCode &&
-        option.$2?.scriptCode == currentLocale?.scriptCode);
+    final selectedIndex = options.indexWhere(
+      (option) =>
+          option.$2?.languageCode == currentLocale?.languageCode &&
+          option.$2?.scriptCode == currentLocale?.scriptCode,
+    );
 
     showDialog(
       context: context,
-      builder: (context) => SimpleDialog(
-        title: Text(S.of(context).settingsLanguage),
-        children: [
-          RadioOptionGroup<int>(
-            groupValue: selectedIndex >= 0 ? selectedIndex : null,
-            options: [
-              for (var index = 0; index < options.length; index++)
-                RadioOption(
-                  value: index,
-                  title: Text(options[index].$1),
-                ),
-            ],
-            onChanged: (index) {
-              ref.read(localeProvider.notifier).setLocale(options[index].$2);
-              Navigator.of(context).pop();
-            },
-          ),
+      builder: (dialogContext) => CommonOptionDialog<int>(
+        title: S.of(dialogContext).settingsLanguage,
+        icon: Icons.language,
+        value: selectedIndex >= 0 ? selectedIndex : null,
+        options: [
+          for (var index = 0; index < options.length; index++)
+            RadioOption(value: index, title: Text(options[index].$1)),
         ],
+        onChanged: (index) {
+          ref.read(localeProvider.notifier).setLocale(options[index].$2);
+          return true;
+        },
+      ),
+    );
+  }
+
+  // 同时下载数量选择：数值过大易卡顿，也容易触发上游接口限流
+  void _showDownloadConcurrencyPicker(BuildContext context) {
+    final current = ref.read(downloadConcurrencyProvider);
+    showDialog(
+      context: context,
+      builder: (dialogContext) => CommonOptionDialog<int>(
+        title: S.of(dialogContext).maxConcurrentDownloads,
+        icon: Icons.format_list_numbered,
+        description: S.of(dialogContext).maxConcurrentDownloadsSubtitle,
+        value: current,
+        options: [
+          for (final value in const [1, 2, 3, 4, 6, 8, 10, 12, 15, 20])
+            RadioOption(
+              value: value,
+              title:
+                  Text(S.of(dialogContext).maxConcurrentDownloadsCount(value)),
+            ),
+        ],
+        onChanged: (value) {
+          ref.read(downloadConcurrencyProvider.notifier).setConcurrent(value);
+          DownloadService.instance.setMaxConcurrentDownloads(value);
+          return true;
+        },
       ),
     );
   }
@@ -539,9 +517,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           subtitle: S.of(context).uiSettingsSubtitle,
           onTap: () {
             Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (context) => const UiSettingsScreen(),
-              ),
+              MaterialPageRoute(builder: (context) => const UiSettingsScreen()),
             );
           },
         ),
@@ -562,11 +538,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           title: S.of(context).logTitle,
           subtitle: S.of(context).logSubtitle,
           onTap: () {
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (context) => const LogScreen(),
-              ),
-            );
+            Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (context) => const LogScreen()));
           },
         ),
         Consumer(
@@ -577,8 +551,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             return SettingsListTile(
               leading: Stack(
                 children: [
-                  Icon(Icons.info_outline,
-                      color: Theme.of(context).colorScheme.primary),
+                  Icon(
+                    Icons.info_outline,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
                   // Red dot indicator for updates (only when not notified)
                   if (showRedDot)
                     Positioned(
@@ -619,10 +595,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .primary
-                              .withValues(alpha: 0.3),
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.primary.withValues(alpha: 0.3),
                           width: 1,
                         ),
                       ),
@@ -652,9 +627,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
               onTap: () {
                 Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (context) => const AboutScreen(),
-                  ),
+                  MaterialPageRoute(builder: (context) => const AboutScreen()),
                 );
               },
             );
@@ -685,11 +658,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       }
     }
 
-    // 选择源目录（通常是 /sdcard/KikoeruLib/libs_work）
+    // 选择源目录（本地音声文件夹，通常是下载根目录，如 KikoeruLib/libs_work）
     String? sourcePath;
     try {
       sourcePath = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: '选择原 kikoeru 下载目录（通常为 KikoeruLib/libs_work）',
+        dialogTitle: '选择本地音声目录（含 RJ 号文件夹的根目录）',
       );
     } catch (e) {
       if (!mounted) return;
@@ -727,7 +700,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ],
           ),
         ),
-      ),
+    ),
     );
 
     // 执行导入
@@ -785,49 +758,102 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _confirmAndClearCache(BuildContext dialogContext) async {
     final l10n = S.of(dialogContext);
+    // 分类清理选项：缓存类默认勾选，下载文件默认不勾
+    bool clearAppCache = true;
+    bool clearAudioCache = true;
+    bool clearImageCache = true;
     bool includeDownloads = false;
-    
+
     final result = await showDialog<Map<String, bool>>(
       context: dialogContext,
       builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: Text(l10n.confirmClear),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(l10n.confirmClearCacheMessage),
-              const SizedBox(height: 16),
-              // O10: 添加"是否包含下载文件"选项
-              CheckboxListTile(
-                title: Text(l10n.includeDownloads),
-                subtitle: Text(l10n.includeDownloadsWarning),
-                value: includeDownloads,
-                onChanged: (value) {
-                  setState(() {
-                    includeDownloads = value ?? false;
-                  });
-                },
-                controlAffinity: ListTileControlAffinity.leading,
-                contentPadding: EdgeInsets.zero,
+        builder: (context, setState) {
+          final nothingSelected = !clearAppCache &&
+              !clearAudioCache &&
+              !clearImageCache &&
+              !includeDownloads;
+          return AlertDialog(
+            title: Text(l10n.confirmClear),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(l10n.confirmClearCacheMessage),
+                const SizedBox(height: 8),
+                // 选择要清理的内容
+                CheckboxListTile(
+                  title: Text(l10n.storageCache),
+                  value: clearAppCache,
+                  onChanged: (value) {
+                    setState(() {
+                      clearAppCache = value ?? false;
+                    });
+                  },
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                CheckboxListTile(
+                  title: Text(l10n.storageAudioCache),
+                  value: clearAudioCache,
+                  onChanged: (value) {
+                    setState(() {
+                      clearAudioCache = value ?? false;
+                    });
+                  },
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                CheckboxListTile(
+                  title: Text(l10n.storageImageCache),
+                  value: clearImageCache,
+                  onChanged: (value) {
+                    setState(() {
+                      clearImageCache = value ?? false;
+                    });
+                  },
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                // O10: "下载文件"选项（默认不勾，危险操作）
+                CheckboxListTile(
+                  title: Text(l10n.includeDownloads),
+                  subtitle: Text(l10n.includeDownloadsWarning),
+                  value: includeDownloads,
+                  onChanged: (value) {
+                    setState(() {
+                      includeDownloads = value ?? false;
+                    });
+                  },
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, null),
+                child: Text(l10n.cancel),
+              ),
+              ElevatedButton(
+                // 全不选时禁用确认按钮
+                onPressed: nothingSelected
+                    ? null
+                    : () => Navigator.pop(context, {
+                          'confirmed': true,
+                          'appCache': clearAppCache,
+                          'audioCache': clearAudioCache,
+                          'imageCache': clearImageCache,
+                          'includeDownloads': includeDownloads,
+                        }),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                ),
+                child: Text(l10n.confirmClear),
               ),
             ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, null),
-              child: Text(l10n.cancel),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context, {'confirmed': true, 'includeDownloads': includeDownloads}),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-              ),
-              child: Text(l10n.confirmClear),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
 
@@ -837,14 +863,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     showDialog(
       context: dialogContext,
       barrierDismissible: false,
-      builder: (context) => const Center(
-        child: CircularProgressIndicator(),
-      ),
+      builder: (context) => const Center(child: CircularProgressIndicator()),
     );
 
     try {
-      await CacheService.clearAllCache();
-      
+      // 按勾选项分类清理
+      if (result['appCache'] == true) {
+        await CacheService.clearAppCache();
+      }
+      if (result['audioCache'] == true) {
+        await CacheService.clearAudioCache();
+      }
+      if (result['imageCache'] == true) {
+        await CacheService.clearImageCache();
+      }
+
       // O10: 如果用户选择包含下载文件，则清理下载目录
       if (result['includeDownloads'] == true) {
         await DownloadService.instance.clearAllDownloads();
@@ -897,14 +930,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   // 显示缓存管理对话框
   Future<void> _showCacheManagementDialog() async {
     // 直接使用已经获取的 _cacheSize，避免重复调用
-    final currentSize = await CacheService.getCacheSize();
     final formattedSize = _cacheSize; // 使用已缓存的格式化字符串
-    int currentLimit = await CacheService.getCacheSizeLimit();
 
-    // O7: 获取分项存储数据
-    final audioCacheSize = await CacheService.getAudioCacheSize();
-    final imageCacheSize = await CacheService.getImageCacheSize();
-    final downloadSize = await CacheService.getDownloadSize();
+    // 分项大小并行计算，避免串行 await 导致对话框迟迟弹不出来
+    final results = await Future.wait<int>([
+      CacheService.getCacheSize(),
+      CacheService.getCacheSizeLimit(),
+      CacheService.getAudioCacheSize(),
+      CacheService.getImageCacheSize(),
+    ]);
+    final currentSize = results[0];
+    final currentLimit = results[1];
+
+    // O7: 获取分项存储数据（不含下载文件——遍历整个下载目录太慢，
+    // 下载占用请到"下载管理"页面查看）
+    final audioCacheSize = results[2];
+    final imageCacheSize = results[3];
     final appCacheSize = currentSize - audioCacheSize - imageCacheSize;
 
     if (!mounted) return;
@@ -960,8 +1001,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             title: Row(
               children: [
                 Expanded(
-                  child: Text(S.of(context).cacheManagement,
-                      style: const TextStyle(fontSize: 18)),
+                  child: Text(
+                    S.of(context).cacheManagement,
+                    style: UiTextStyles.pageTitle,
+                  ),
                 ),
                 if (isLandscape)
                   IconButton(
@@ -986,9 +1029,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               children: [
                                 // 当前缓存大小
                                 SettingsSectionCard(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .surfaceContainerHighest,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.surfaceContainerHighest,
                                   child: Padding(
                                     padding: const EdgeInsets.all(16.0),
                                     child: Column(
@@ -1008,30 +1051,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                           style: TextStyle(
                                             fontSize: 24,
                                             fontWeight: FontWeight.bold,
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .primary,
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.primary,
                                           ),
                                         ),
                                         const SizedBox(height: 8),
                                         LinearProgressIndicator(
                                           value: currentLimit > 0
                                               ? (currentSize /
-                                                      (currentLimit *
-                                                          1024 *
-                                                          1024))
-                                                  .clamp(0.0, 1.0)
+                                                        (currentLimit *
+                                                            1024 *
+                                                            1024))
+                                                    .clamp(0.0, 1.0)
                                               : 0.0,
                                           backgroundColor: Colors.grey[300],
                                           valueColor:
                                               AlwaysStoppedAnimation<Color>(
-                                            currentSize >
-                                                    currentLimit * 1024 * 1024
-                                                ? Colors.red
-                                                : Theme.of(context)
-                                                    .colorScheme
-                                                    .primary,
-                                          ),
+                                                currentSize >
+                                                        currentLimit *
+                                                            1024 *
+                                                            1024
+                                                    ? Colors.red
+                                                    : Theme.of(
+                                                        context,
+                                                      ).colorScheme.primary,
+                                              ),
                                         ),
                                         const SizedBox(height: 4),
                                         Text(
@@ -1050,9 +1095,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                 const SizedBox(height: 16),
                                 // 使用量详情
                                 SettingsSectionCard(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .surfaceContainerHighest,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.surfaceContainerHighest,
                                   child: Padding(
                                     padding: const EdgeInsets.all(16.0),
                                     child: Column(
@@ -1076,14 +1121,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                               style: TextStyle(
                                                 fontSize: 20,
                                                 fontWeight: FontWeight.bold,
-                                                color: currentSize >
+                                                color:
+                                                    currentSize >
                                                         currentLimit *
                                                             1024 *
                                                             1024
                                                     ? Colors.red
-                                                    : Theme.of(context)
-                                                        .colorScheme
-                                                        .primary,
+                                                    : Theme.of(
+                                                        context,
+                                                      ).colorScheme.primary,
                                               ),
                                             ),
                                             Icon(
@@ -1091,7 +1137,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                                       currentLimit * 1024 * 1024
                                                   ? Icons.warning_amber_rounded
                                                   : Icons.check_circle_outline,
-                                              color: currentSize >
+                                              color:
+                                                  currentSize >
                                                       currentLimit * 1024 * 1024
                                                   ? Colors.red
                                                   : Colors.green,
@@ -1146,20 +1193,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                           size: imageCacheSize,
                                           color: Colors.orange,
                                         ),
-                                        const SizedBox(height: 8),
-                                        _buildStorageBreakdownItem(
-                                          context,
-                                          icon: Icons.download_outlined,
-                                          label: S.of(context).storageDownloads,
-                                          size: downloadSize,
-                                          color: Colors.green,
-                                        ),
                                         const Divider(height: 24),
                                         _buildStorageBreakdownItem(
                                           context,
                                           icon: Icons.storage_outlined,
                                           label: S.of(context).storageTotal,
-                                          size: currentSize + downloadSize,
+                                          size: currentSize,
                                           color: Theme.of(context).colorScheme.primary,
                                           isTotal: true,
                                         ),
@@ -1205,10 +1244,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                         });
                                       },
                                       onChangeEnd: (value) async {
-                                        final finalLimit =
-                                            sliderValueToMB(value);
+                                        final finalLimit = sliderValueToMB(
+                                          value,
+                                        );
                                         await CacheService.setCacheSizeLimit(
-                                            finalLimit);
+                                          finalLimit,
+                                        );
                                         if (mounted) {
                                           setState(() {}); // 刷新主界面
                                         }
@@ -1221,9 +1262,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                       style: TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.bold,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .primary,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
                                       ),
                                     ),
                                   ],
@@ -1243,8 +1284,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                     children: [
                                       Row(
                                         children: [
-                                          const Icon(Icons.info_outline,
-                                              size: 16, color: Colors.blue),
+                                          const Icon(
+                                            Icons.info_outline,
+                                            size: 16,
+                                            color: Colors.blue,
+                                          ),
                                           const SizedBox(width: 8),
                                           Text(
                                             S.of(context).autoCleanTitle,
@@ -1275,9 +1319,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       children: [
                         // 当前缓存大小
                         SettingsSectionCard(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .surfaceContainerHighest,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.surfaceContainerHighest,
                           child: Padding(
                             padding: const EdgeInsets.all(16.0),
                             child: Column(
@@ -1296,16 +1340,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                   style: TextStyle(
                                     fontSize: 24,
                                     fontWeight: FontWeight.bold,
-                                    color:
-                                        Theme.of(context).colorScheme.primary,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
                                   ),
                                 ),
                                 const SizedBox(height: 8),
                                 LinearProgressIndicator(
                                   value: currentLimit > 0
                                       ? (currentSize /
-                                              (currentLimit * 1024 * 1024))
-                                          .clamp(0.0, 1.0)
+                                                (currentLimit * 1024 * 1024))
+                                            .clamp(0.0, 1.0)
                                       : 0.0,
                                   backgroundColor: Colors.grey[300],
                                   valueColor: AlwaysStoppedAnimation<Color>(
@@ -1370,20 +1415,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                                   size: imageCacheSize,
                                   color: Colors.orange,
                                 ),
-                                const SizedBox(height: 8),
-                                _buildStorageBreakdownItem(
-                                  context,
-                                  icon: Icons.download_outlined,
-                                  label: S.of(context).storageDownloads,
-                                  size: downloadSize,
-                                  color: Colors.green,
-                                ),
                                 const Divider(height: 24),
                                 _buildStorageBreakdownItem(
                                   context,
                                   icon: Icons.storage_outlined,
                                   label: S.of(context).storageTotal,
-                                  size: currentSize + downloadSize,
+                                  size: currentSize,
                                   color: Theme.of(context).colorScheme.primary,
                                   isTotal: true,
                                 ),
@@ -1420,7 +1457,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                               onChangeEnd: (value) async {
                                 final finalLimit = sliderValueToMB(value);
                                 await CacheService.setCacheSizeLimit(
-                                    finalLimit);
+                                  finalLimit,
+                                );
                                 if (mounted) {
                                   setState(() {}); // 刷新主界面
                                 }
@@ -1452,8 +1490,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             children: [
                               Row(
                                 children: [
-                                  const Icon(Icons.info_outline,
-                                      size: 16, color: Colors.blue),
+                                  const Icon(
+                                    Icons.info_outline,
+                                    size: 16,
+                                    color: Colors.blue,
+                                  ),
                                   const SizedBox(width: 8),
                                   Text(
                                     S.of(context).autoCleanTitle,

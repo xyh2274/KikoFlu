@@ -34,8 +34,32 @@ void main() {
     expect(find.text('Subtitle'), findsNothing);
   });
 
-  testWidgets('shows subtitle badge and handles long press', (tester) async {
-    var longPressCount = 0;
+  testWidgets('uses the source cover for the Hero flight', (tester) async {
+    await tester.pumpWidget(
+      _testApp(
+        const WorkCoverFrame(
+          heroTag: 'cover-flight',
+          isLandscape: false,
+          layers: [Center(child: Text('Cover Layer'))],
+        ),
+      ),
+    );
+
+    final hero = tester.widget<Hero>(find.byType(Hero));
+    final heroContext = tester.element(find.byType(Hero));
+    final shuttle = hero.flightShuttleBuilder!(
+      heroContext,
+      const AlwaysStoppedAnimation<double>(0),
+      HeroFlightDirection.push,
+      heroContext,
+      heroContext,
+    );
+
+    expect(identical(shuttle, hero.child), isTrue);
+  });
+
+  testWidgets('shows subtitle and age badges and handles tap', (tester) async {
+    var tapCount = 0;
 
     await tester.pumpWidget(
       _testApp(
@@ -43,7 +67,9 @@ void main() {
           heroTag: 'cover-2',
           isLandscape: true,
           showSubtitleBadge: true,
-          onLongPress: () => longPressCount++,
+          showAgeRating: true,
+          age: 'R18',
+          onTap: () => tapCount++,
           layers: const [
             Center(child: Text('Cover Layer')),
           ],
@@ -52,9 +78,19 @@ void main() {
     );
 
     expect(find.text('Subtitle'), findsOneWidget);
+    expect(find.byKey(const ValueKey('work-cover-age-badge')), findsOneWidget);
 
-    await tester.longPress(find.text('Cover Layer'));
+    final ageBadge = tester.getRect(
+      find.byKey(const ValueKey('work-cover-age-badge')),
+    );
+    final subtitleBadge = tester.getRect(
+      find.byKey(const ValueKey('work-cover-subtitle-badge')),
+    );
+    expect(ageBadge.bottom, subtitleBadge.bottom);
+    expect(ageBadge.left, lessThan(subtitleBadge.left));
 
-    expect(longPressCount, 1);
+    await tester.tap(find.text('Cover Layer'));
+
+    expect(tapCount, 1);
   });
 }

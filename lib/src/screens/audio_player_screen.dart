@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,6 +17,7 @@ import '../widgets/player/player_controls_widget.dart';
 import '../widgets/player/lyric_display_widget.dart';
 import '../widgets/player/playlist_dialog.dart';
 import '../widgets/work_bookmark_manager.dart';
+import '../widgets/confirmation_dialog.dart';
 import 'work_detail_screen.dart';
 import '../../l10n/app_localizations.dart';
 
@@ -63,11 +67,20 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
       _isLyricLocked = false;
       _showUnlockButton = false;
     });
-    // 恢复系统UI
-    SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.manual,
-      overlays: SystemUiOverlay.values,
+    // 恢复系统UI，并在 Android 上重新启用 edge-to-edge。
+    unawaited(
+      restoreSystemUiAfterImmersiveMode(useEdgeToEdge: Platform.isAndroid),
     );
+  }
+
+  @override
+  void dispose() {
+    if (_isLyricLocked) {
+      unawaited(
+        restoreSystemUiAfterImmersiveMode(useEdgeToEdge: Platform.isAndroid),
+      );
+    }
+    super.dispose();
   }
 
   /// 处理锁定状态下的点击
@@ -192,25 +205,15 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
     }
     if (!context.mounted) return false;
 
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(S.of(dialogContext).translateLyrics),
-        content: Text(S.of(dialogContext).lyricTranslationConfirmMessage),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: Text(S.of(dialogContext).cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: Text(S.of(dialogContext).confirm),
-          ),
-        ],
-      ),
+      title: S.of(context).translateLyrics,
+      content: Text(S.of(context).lyricTranslationConfirmMessage),
+      confirmLabel: S.of(context).confirm,
+      variant: ConfirmationDialogVariant.warning,
     );
 
-    if (confirmed == true) {
+    if (confirmed) {
       await prefs.setBool(_lyricTranslationConfirmKey, true);
       return true;
     }
@@ -224,6 +227,8 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
     final position = ref.watch(positionProvider);
     final duration = ref.watch(durationProvider);
     final audioState = ref.watch(audioPlayerControllerProvider);
+    final isTrackLoading =
+        ref.watch(isTrackLoadingProvider).valueOrNull ?? false;
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
 
@@ -251,6 +256,7 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
               position,
               duration,
               audioState,
+              isTrackLoading,
             )
           : _buildPortraitLayout(
               context,
@@ -259,6 +265,7 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
               position,
               duration,
               audioState,
+              isTrackLoading,
             ),
     );
   }
@@ -321,6 +328,7 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
     AsyncValue<Duration> position,
     AsyncValue<Duration?> duration,
     AudioPlayerState audioState,
+    bool isTrackLoading,
   ) {
     return Stack(
       children: [
@@ -460,6 +468,7 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
               child: Text(S.of(context).errorWithMessage(error.toString()))),
         ),
         if (_showLyricHint) _buildLyricHintBanner(),
+        if (isTrackLoading) _buildTrackLoadingOverlay(context),
       ],
     );
   }
@@ -471,8 +480,9 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
     AsyncValue<Duration> position,
     AsyncValue<Duration?> duration,
     AudioPlayerState audioState,
+    bool isTrackLoading,
   ) {
-    return currentTrack.when(
+    final content = currentTrack.when(
       data: (track) {
         if (track == null) {
           return Center(child: Text(S.of(context).noAudioPlaying));
@@ -680,8 +690,48 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (error, stack) =>
-          Center(child: Text(S.of(context).errorWithMessage(error.toString()))),
+      error: (error, stack) => Center(
+          child: Text(S.of(context).errorWithMessage(error.toString()))),
+    );
+    return _buildTrackLoadingState(
+      context: context,
+      isLoading: isTrackLoading,
+      child: content,
+    );
+  }
+
+  Widget _buildTrackLoadingState({
+    required BuildContext context,
+    required Widget child,
+    required bool isLoading,
+  }) {
+    if (!isLoading) return child;
+    return Stack(
+      children: [
+        child,
+        _buildTrackLoadingOverlay(context),
+      ],
+    );
+  }
+
+  Widget _buildTrackLoadingOverlay(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Positioned.fill(
+      child: AbsorbPointer(
+        child: ColoredBox(
+          color: colorScheme.surface.withValues(alpha: 0.18),
+          child: Center(
+            child: SizedBox(
+              width: 36,
+              height: 36,
+              child: CircularProgressIndicator(
+                strokeWidth: 3,
+                color: colorScheme.primary,
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -841,10 +891,14 @@ class _AudioPlayerScreenState extends ConsumerState<AudioPlayerScreen> {
 
                     final savedPath =
                         await controller.translateAndSaveCurrentLyrics();
-                    if (context.mounted && savedPath != null) {
+                    if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(S.of(context).savedToSubtitleLibrary),
+                          content: Text(
+                            savedPath != null
+                                ? S.of(context).savedToSubtitleLibrary
+                                : S.of(context).translatedLyricsNotSaved,
+                          ),
                           behavior: SnackBarBehavior.floating,
                         ),
                       );

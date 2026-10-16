@@ -12,6 +12,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../l10n/app_localizations.dart';
 import '../models/work.dart';
 import '../providers/auth_provider.dart';
+import '../providers/work_detail_display_provider.dart';
 import '../services/translation_service.dart';
 import '../services/download_service.dart';
 import '../utils/system_ui_style.dart';
@@ -412,6 +413,7 @@ class _OfflineWorkDetailScreenState
         : '$host/api/cover/${work.id}';
     final hasLocalCover = widget.localCoverPath != null &&
         File(widget.localCoverPath!).existsSync();
+    final displaySettings = ref.watch(workDetailDisplayProvider);
 
     // 信息内容组件
     final infoWidget = Padding(
@@ -472,7 +474,9 @@ class _OfflineWorkDetailScreenState
         return WorkCoverFrame(
           heroTag: 'offline_work_cover_${widget.work.id}',
           isLandscape: isLandscape,
-          onLongPress: () {
+          showAgeRating: displaySettings.showAgeRating,
+          age: work.age,
+          onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute(
                 builder: (context) => ImageGalleryScreen(

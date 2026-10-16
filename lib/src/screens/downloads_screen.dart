@@ -5,6 +5,9 @@ import '../../l10n/app_localizations.dart';
 import '../models/download_task.dart';
 import '../services/download_service.dart';
 import '../utils/string_utils.dart';
+import '../utils/ui_tokens.dart';
+import '../widgets/virtualized_sliver_collection.dart';
+import '../widgets/confirmation_dialog.dart';
 
 class DownloadsScreen extends ConsumerStatefulWidget {
   const DownloadsScreen({super.key});
@@ -81,6 +84,18 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
     });
   }
 
+  Future<void> _pauseSelected() async {
+    final taskIds = List<String>.from(_selectedTaskIds);
+    if (taskIds.isEmpty) return;
+    await DownloadService.instance.pauseTasks(taskIds);
+  }
+
+  Future<void> _resumeSelected() async {
+    final taskIds = List<String>.from(_selectedTaskIds);
+    if (taskIds.isEmpty) return;
+    await DownloadService.instance.resumeTasks(taskIds);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -88,7 +103,10 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
         scrolledUnderElevation: 0,
         title: _isSelectionMode
             ? Text(S.of(context).selectedCount(_selectedTaskIds.length))
-            : Text(S.of(context).downloadTasks, style: const TextStyle(fontSize: 18)),
+            : Text(
+                S.of(context).downloadTasks,
+                style: UiTextStyles.pageTitle,
+              ),
         leading: _isSelectionMode
             ? IconButton(
                 icon: const Icon(Icons.close),
@@ -101,11 +119,13 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
                   icon: const Icon(Icons.select_all),
                   onPressed: () {
                     final tasks = DownloadService.instance.tasks;
-                    final currentTasks = tasks.where((t) =>
-                        t.status == DownloadStatus.downloading ||
-                        t.status == DownloadStatus.paused ||
-                        t.status == DownloadStatus.pending ||
-                        t.status == DownloadStatus.failed);
+                    final currentTasks = tasks.where(
+                      (t) =>
+                          t.status == DownloadStatus.downloading ||
+                          t.status == DownloadStatus.paused ||
+                          t.status == DownloadStatus.pending ||
+                          t.status == DownloadStatus.failed,
+                    );
                     _selectAll(currentTasks.toList());
                   },
                   tooltip: S.of(context).selectAll,
@@ -114,6 +134,24 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
                   icon: const Icon(Icons.deselect),
                   onPressed: _deselectAll,
                   tooltip: S.of(context).deselectAll,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.pause),
+                  onPressed: _selectedTaskIds.isEmpty
+                      ? null
+                      : () {
+                          _pauseSelected();
+                        },
+                  tooltip: S.of(context).pause,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.play_arrow),
+                  onPressed: _selectedTaskIds.isEmpty
+                      ? null
+                      : () {
+                          _resumeSelected();
+                        },
+                  tooltip: S.of(context).resume,
                 ),
                 IconButton(
                   icon: const Icon(Icons.delete),
@@ -138,11 +176,13 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
           final tasks = snapshot.data ?? [];
 
           final downloadingTasks = tasks
-              .where((t) =>
-                  t.status == DownloadStatus.downloading ||
-                  t.status == DownloadStatus.paused ||
-                  t.status == DownloadStatus.pending ||
-                  t.status == DownloadStatus.failed)
+              .where(
+                (t) =>
+                    t.status == DownloadStatus.downloading ||
+                    t.status == DownloadStatus.paused ||
+                    t.status == DownloadStatus.pending ||
+                    t.status == DownloadStatus.failed,
+              )
               .toList();
 
           return _buildDownloadingList(downloadingTasks);
@@ -159,7 +199,10 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
           children: [
             const Icon(Icons.download_outlined, size: 64, color: Colors.grey),
             const SizedBox(height: 16),
-            Text(S.of(context).noDownloadTasks, style: const TextStyle(color: Colors.grey)),
+            Text(
+              S.of(context).noDownloadTasks,
+              style: const TextStyle(color: Colors.grey),
+            ),
           ],
         ),
       );
@@ -171,18 +214,25 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
       groupedTasks.putIfAbsent(task.workId, () => []).add(task);
     }
 
-    return ListView.builder(
-      itemCount: groupedTasks.length,
-      itemBuilder: (context, index) {
-        final workId = groupedTasks.keys.elementAt(index);
-        final workTasks = groupedTasks[workId]!;
+    final groups = groupedTasks.entries.toList(growable: false);
+
+    return VirtualizedSliverCollection<MapEntry<int, List<DownloadTask>>>(
+      items: groups,
+      itemId: (entry) => entry.key,
+      pageStorageKey: const PageStorageKey('active-downloads-feed'),
+      showEndIndicator: false,
+      itemBuilder: (context, entry, index) {
+        final workId = entry.key;
+        final workTasks = entry.value;
         final firstTask = workTasks.first;
 
         final isWorkSelected = _selectedWorkIds.contains(workId);
 
         return Card(
+          key: ValueKey(workId),
           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           child: ExpansionTile(
+            key: PageStorageKey('download-work-$workId'),
             leading: _isSelectionMode
                 ? Checkbox(
                     value: isWorkSelected,
@@ -362,16 +412,42 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
     final isSelected = _selectedTaskIds.contains(task.id);
 
     return ListTile(
+      key: ValueKey(task.id),
       leading: _isSelectionMode
           ? Checkbox(
               value: isSelected,
               onChanged: (_) => _toggleTaskSelection(task.id),
             )
           : _buildStatusIcon(task.status),
-      title: Text(
-        task.fileName,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              task.fileName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // 补充下载任务标记：由"已下载→补充下载"创建，便于复查管理
+          if (task.isSupplemental) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                color: Colors.teal.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: Colors.teal.withValues(alpha: 0.5)),
+              ),
+              child: Text(
+                S.of(context).supplementTaskBadge,
+                style: const TextStyle(
+                  fontSize: 10,
+                  color: Colors.teal,
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
       onTap: _isSelectionMode ? () => _toggleTaskSelection(task.id) : null,
       subtitle: Column(
@@ -476,57 +552,33 @@ class _DownloadsScreenState extends ConsumerState<DownloadsScreen> {
   }
 
   Future<void> _confirmDelete(DownloadTask task) async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(S.of(context).deletionConfirmTitle),
-        content: Text(S.of(context).deleteFileConfirm(task.fileName)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: Text(S.of(context).cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.red,
-            ),
-            child: Text(S.of(context).delete),
-          ),
-        ],
-      ),
+      title: S.of(context).deletionConfirmTitle,
+      content: Text(S.of(context).deleteFileConfirm(task.fileName)),
+      confirmLabel: S.of(context).delete,
+      variant: ConfirmationDialogVariant.danger,
     );
 
     if (confirmed == true) {
       await DownloadService.instance.deleteTask(task.id);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(S.of(context).deleted)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(S.of(context).deleted)));
       }
     }
   }
 
   Future<void> _confirmBatchDelete() async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await showCommonConfirmationDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(S.of(context).deletionConfirmTitle),
-        content: Text(S.of(context).deleteSelectedFilesConfirm(_selectedTaskIds.length)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: Text(S.of(context).cancel),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.red,
-            ),
-            child: Text(S.of(context).delete),
-          ),
-        ],
+      title: S.of(context).deletionConfirmTitle,
+      content: Text(
+        S.of(context).deleteSelectedFilesConfirm(_selectedTaskIds.length),
       ),
+      confirmLabel: S.of(context).delete,
+      variant: ConfirmationDialogVariant.danger,
     );
 
     if (confirmed == true) {

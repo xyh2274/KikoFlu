@@ -1,5 +1,160 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/app_localizations.dart';
+import '../utils/snackbar_util.dart';
+import '../utils/ui_tokens.dart';
+import 'scrollable_appbar.dart';
+import 'confirmation_dialog.dart';
+
+class SettingsSubpageScaffold extends StatelessWidget {
+  const SettingsSubpageScaffold({
+    super.key,
+    required this.title,
+    required this.body,
+    this.actions = const [],
+    this.onRestoreDefaults,
+    this.restoreDefaultsTooltip,
+  });
+
+  final String title;
+  final Widget body;
+  final List<Widget> actions;
+  final VoidCallback? onRestoreDefaults;
+  final String? restoreDefaultsTooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final appBarActions = <Widget>[
+      if (onRestoreDefaults != null)
+        IconButton(
+          onPressed: onRestoreDefaults,
+          icon: const Icon(Icons.restart_alt),
+          tooltip:
+              restoreDefaultsTooltip ?? S.of(context).restoreDefaultSettings,
+        ),
+      ...actions,
+    ];
+
+    return Scaffold(
+      appBar: ScrollableAppBar(
+        title: Text(title, style: UiTextStyles.pageTitle),
+        actions: appBarActions.isEmpty ? null : appBarActions,
+      ),
+      body: body,
+    );
+  }
+}
+
+Future<bool> showSettingsResetConfirmation({
+  required BuildContext context,
+  required String message,
+  String? title,
+  String? confirmLabel,
+}) async {
+  return showCommonConfirmationDialog(
+    context: context,
+    title: title ?? S.of(context).restoreDefaultSettings,
+    content: Text(message),
+    confirmLabel: confirmLabel ?? S.of(context).confirm,
+  );
+}
+
+Future<bool> confirmAndRestoreSettingsDefaults({
+  required BuildContext context,
+  required Future<void> Function() restore,
+  Future<void> Function()? afterRestore,
+  String? title,
+  String? message,
+  String? confirmLabel,
+}) async {
+  final confirmed = await showSettingsResetConfirmation(
+    context: context,
+    title: title,
+    message: message ?? S.of(context).confirmRestoreDefaultSettings,
+    confirmLabel: confirmLabel,
+  );
+  if (!confirmed || !context.mounted) return false;
+
+  await restore();
+  if (!context.mounted) return true;
+  await afterRestore?.call();
+  if (context.mounted) {
+    SnackBarUtil.showSuccess(context, S.of(context).restoredToDefault);
+  }
+  return true;
+}
+
+typedef SettingsReorderItemBuilder<T> = Widget Function(
+  BuildContext context,
+  T item,
+  int index,
+);
+
+class SettingsReorderablePage<T> extends StatelessWidget {
+  const SettingsReorderablePage({
+    super.key,
+    required this.title,
+    required this.infoTitle,
+    required this.infoDescription,
+    required this.items,
+    required this.itemKey,
+    required this.itemBuilder,
+    required this.onOrderChanged,
+    required this.onRestoreDefaults,
+  });
+
+  final String title;
+  final String infoTitle;
+  final String infoDescription;
+  final List<T> items;
+  final Object Function(T item) itemKey;
+  final SettingsReorderItemBuilder<T> itemBuilder;
+  final ValueChanged<List<T>> onOrderChanged;
+  final VoidCallback onRestoreDefaults;
+
+  @override
+  Widget build(BuildContext context) {
+    return SettingsSubpageScaffold(
+      title: title,
+      onRestoreDefaults: onRestoreDefaults,
+      body: Column(
+        children: [
+          SettingsInfoCard(
+            icon: Icons.info_outline,
+            title: infoTitle,
+            margin: const EdgeInsets.all(16),
+            child: Text(
+              infoDescription,
+              style: UiTextStyles.supporting,
+            ),
+          ),
+          Expanded(
+            child: ReorderableListView.builder(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: items.length,
+              onReorder: (oldIndex, newIndex) {
+                final reordered = List<T>.of(items);
+                if (newIndex > oldIndex) newIndex -= 1;
+                final item = reordered.removeAt(oldIndex);
+                reordered.insert(newIndex, item);
+                onOrderChanged(reordered);
+              },
+              itemBuilder: (context, index) {
+                final item = items[index];
+                return SettingsSectionCard(
+                  key: ValueKey(itemKey(item)),
+                  margin: const EdgeInsets.only(bottom: 8),
+                  child: itemBuilder(context, item, index),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class SettingsSectionCard extends StatelessWidget {
   const SettingsSectionCard({
     super.key,
@@ -97,12 +252,12 @@ class SettingsInfoCard extends StatelessWidget {
       color: color,
       margin: margin,
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(UiSpacing.large),
         child: title == null
             ? Row(
                 children: [
                   Icon(icon, color: resolvedIconColor),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: UiSpacing.medium),
                   Expanded(child: child),
                 ],
               )
@@ -111,8 +266,12 @@ class SettingsInfoCard extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      Icon(icon, size: 20, color: resolvedIconColor),
-                      const SizedBox(width: 8),
+                      Icon(
+                        icon,
+                        size: UiIconSize.standard,
+                        color: resolvedIconColor,
+                      ),
+                      const SizedBox(width: UiSpacing.small),
                       Text(
                         title!,
                         style: theme.textTheme.titleSmall?.copyWith(
@@ -121,7 +280,7 @@ class SettingsInfoCard extends StatelessWidget {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: UiSpacing.medium),
                   child,
                 ],
               ),
@@ -164,6 +323,7 @@ class SettingsListTile extends StatelessWidget {
 
     return ListTile(
       enabled: enabled,
+      contentPadding: const EdgeInsets.symmetric(horizontal: UiSpacing.large),
       leading: leading ?? Icon(icon, color: resolvedIconColor, size: iconSize),
       title: Text(title),
       subtitle: subtitle == null
@@ -244,6 +404,7 @@ class SettingsSwitchTile extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
 
     return SwitchListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: UiSpacing.large),
       secondary:
           secondary ?? Icon(icon, color: iconColor ?? colorScheme.primary),
       title: Text(title),
@@ -257,7 +418,7 @@ class SettingsSwitchTile extends StatelessWidget {
 class SettingsDivider extends StatelessWidget {
   const SettingsDivider({
     super.key,
-    this.indent = 52,
+    this.indent = UiControlSize.settingsLeading,
     this.endIndent = 0,
   });
 

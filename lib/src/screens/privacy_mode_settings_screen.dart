@@ -4,8 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../l10n/app_localizations.dart';
 import '../providers/settings_provider.dart';
 import '../utils/snackbar_util.dart';
-import '../widgets/scrollable_appbar.dart';
 import '../widgets/settings_section.dart';
+import '../widgets/common_input_dialog.dart';
 
 /// 防社死设置页面
 class PrivacyModeSettingsScreen extends ConsumerStatefulWidget {
@@ -18,64 +18,35 @@ class PrivacyModeSettingsScreen extends ConsumerStatefulWidget {
 
 class _PrivacyModeSettingsScreenState
     extends ConsumerState<PrivacyModeSettingsScreen> {
-  final TextEditingController _titleController = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    // 延迟加载，确保 ref 可用
-    Future.microtask(() {
-      if (mounted) {
-        final settings = ref.read(privacyModeSettingsProvider);
-        _titleController.text = settings.customTitle;
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _titleController.dispose();
-    super.dispose();
-  }
-
-  void _showEditTitleDialog() {
+  Future<void> _showEditTitleDialog() async {
     final settings = ref.read(privacyModeSettingsProvider);
-    _titleController.text = settings.customTitle;
 
-    showDialog(
+    final title = await showCommonTextInputDialog(
+      context,
+      title: S.of(context).setReplaceTitle,
+      labelText: S.of(context).replaceTitle,
+      hintText: S.of(context).enterDisplayTitle,
+      confirmLabel: S.of(context).save,
+      initialValue: settings.customTitle,
+      maxLength: 50,
+      icon: Icons.title,
+      validator: (value) =>
+          value.isEmpty ? S.of(context).enterDisplayTitle : null,
+    );
+
+    final normalizedTitle = title?.trim();
+    if (!mounted || normalizedTitle == null || normalizedTitle.isEmpty) return;
+
+    ref
+        .read(privacyModeSettingsProvider.notifier)
+        .setCustomTitle(normalizedTitle);
+    SnackBarUtil.showSuccess(context, S.of(context).replaceTitleSaved);
+  }
+
+  Future<void> _resetToDefault() async {
+    await confirmAndRestoreSettingsDefaults(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(S.of(context).setReplaceTitle),
-        content: TextField(
-          controller: _titleController,
-          decoration: InputDecoration(
-            labelText: S.of(context).replaceTitle,
-            hintText: S.of(context).enterDisplayTitle,
-            border: const OutlineInputBorder(),
-          ),
-          maxLength: 50,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(S.of(context).cancel),
-          ),
-          FilledButton(
-            onPressed: () {
-              final title = _titleController.text.trim();
-              if (title.isNotEmpty) {
-                ref
-                    .read(privacyModeSettingsProvider.notifier)
-                    .setCustomTitle(title);
-                Navigator.pop(context);
-                SnackBarUtil.showSuccess(
-                    context, S.of(context).replaceTitleSaved);
-              }
-            },
-            child: Text(S.of(context).save),
-          ),
-        ],
-      ),
+      restore: ref.read(privacyModeSettingsProvider.notifier).resetToDefault,
     );
   }
 
@@ -83,11 +54,9 @@ class _PrivacyModeSettingsScreenState
   Widget build(BuildContext context) {
     final settings = ref.watch(privacyModeSettingsProvider);
 
-    return Scaffold(
-      appBar: ScrollableAppBar(
-        title: Text(S.of(context).privacyModeSettingsTitle,
-            style: const TextStyle(fontSize: 18)),
-      ),
+    return SettingsSubpageScaffold(
+      title: S.of(context).privacyModeSettingsTitle,
+      onRestoreDefaults: _resetToDefault,
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
