@@ -3912,4 +3912,67 @@ class SRu extends S {
 
   @override
   String get playlistDisplayFormatList => 'Список';
+
+  @override
+  String get integrityCheck => 'Проверка загрузок';
+
+  @override
+  String get integrityChecking => 'Проверка локальных файлов...';
+
+  @override
+  String integrityCheckingProgress(int count, int total) {
+    return 'Проверено $count/$total...';
+  }
+
+  @override
+  String integritySummary(int works, int files, int problems) {
+    return '$works работ · $files файлов · $problems проблем';
+  }
+
+  @override
+  String get integrityAllGood => 'Все файлы в порядке';
+
+  @override
+  String integrityCheckFailed(int count) {
+    return 'Не удалось проверить работ: $count';
+  }
+
+  @override
+  String get integrityVerdictZeroByte => '0 байт';
+
+  @override
+  String get integrityVerdictShortSize => 'Обрезан';
+
+  @override
+  String get integrityVerdictOversize => 'Больше оригинала';
+
+  @override
+  String get integrityVerdictHeaderCorrupt => 'Повреждён заголовок';
+
+  @override
+  String get integrityVerdictNotOnServer => 'Нет на сервере';
+
+  @override
+  String integrityProblemCount(int count) {
+    return 'Проблем: $count';
+  }
+
+  @override
+  String get integrityRedownload => 'Скачать снова';
+
+  @override
+  String integrityFixSelected(int count) {
+    return 'Исправить: $count';
+  }
+
+  @override
+  String integrityAddedToQueue(int count) {
+    return 'Добавлено в очередь: $count';
+  }
+
+  @override
+  String get integrityQueued => 'В очереди';
+
+  @override
+  String get integrityNoFixable => 'Нет выбранных файлов для исправления';
 }

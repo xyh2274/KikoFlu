@@ -1312,5 +1312,23 @@
   "proxyModeManualDescription": "使用下方配置的 HTTP 代理",
   "playlistDisplayFormat": "播放列表布局",
   "playlistDisplayFormatMasonry": "瀑布流",
-  "playlistDisplayFormatList": "列表"
+  "playlistDisplayFormatList": "列表",
+
+  "integrityCheck": "下载体检",
+  "integrityChecking": "正在体检本地文件...",
+  "integrityCheckingProgress": "正在体检 {count}/{total} 个音声...",
+  "integritySummary": "{works} 个音声 · {files} 个文件 · {problems} 个异常",
+  "integrityAllGood": "未发现异常，本地文件完整",
+  "integrityCheckFailed": "{count} 个音声体检失败已跳过",
+  "integrityVerdictZeroByte": "0 字节",
+  "integrityVerdictShortSize": "内容缺失",
+  "integrityVerdictOversize": "体积偏大",
+  "integrityVerdictHeaderCorrupt": "文件头损坏",
+  "integrityVerdictNotOnServer": "服务器已无此文件",
+  "integrityProblemCount": "{count} 个异常",
+  "integrityRedownload": "重下",
+  "integrityFixSelected": "修复 {count} 个文件",
+  "integrityAddedToQueue": "已加入 {count} 个重下任务",
+  "integrityQueued": "已加入",
+  "integrityNoFixable": "没有选中可修复的文件"
 }

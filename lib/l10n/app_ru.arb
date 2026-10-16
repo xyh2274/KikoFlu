@@ -1263,5 +1263,23 @@
   "proxyModeManualDescription": "Использовать настроенный ниже HTTP-прокси",
   "playlistDisplayFormat": "Вид плейлиста",
   "playlistDisplayFormatMasonry": "Мозаика",
-  "playlistDisplayFormatList": "Список"
+  "playlistDisplayFormatList": "Список",
+
+  "integrityCheck": "Проверка загрузок",
+  "integrityChecking": "Проверка локальных файлов...",
+  "integrityCheckingProgress": "Проверено {count}/{total}...",
+  "integritySummary": "{works} работ · {files} файлов · {problems} проблем",
+  "integrityAllGood": "Все файлы в порядке",
+  "integrityCheckFailed": "Не удалось проверить работ: {count}",
+  "integrityVerdictZeroByte": "0 байт",
+  "integrityVerdictShortSize": "Обрезан",
+  "integrityVerdictOversize": "Больше оригинала",
+  "integrityVerdictHeaderCorrupt": "Повреждён заголовок",
+  "integrityVerdictNotOnServer": "Нет на сервере",
+  "integrityProblemCount": "Проблем: {count}",
+  "integrityRedownload": "Скачать снова",
+  "integrityFixSelected": "Исправить: {count}",
+  "integrityAddedToQueue": "Добавлено в очередь: {count}",
+  "integrityQueued": "В очереди",
+  "integrityNoFixable": "Нет выбранных файлов для исправления"
 }

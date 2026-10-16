@@ -10,6 +10,7 @@ import '../../l10n/app_localizations.dart';
 import '../models/download_task.dart';
 import '../models/sort_options.dart';
 import '../models/work.dart';
+import '../services/download_integrity_service.dart';
 import '../services/download_service.dart';
 import '../services/log_service.dart';
 import '../services/storage_service.dart';
@@ -806,6 +807,206 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
     }
   }
 
+  /// 下载体检的并发批大小（与「补充下载对比」同一口径）
+  static const int _integrityConcurrency = 4;
+
+  // 顶部「下载体检」：先多选音声，再以**本地实际存在的文件**为基准回查在线树。
+  // 与「补充下载对比」的差别就在这里——后者以在线树为基准，会把"从没下载过的
+  // 版本"也算成缺失（只下 mp3 的用户会被整套 WAV 淹没），体检则只报告
+  // "已经下载过、而且坏了"的文件。
+  Future<void> _pickWorksForIntegrityCheck(
+      Map<int, List<DownloadTask>> groupedTasks) async {
+    final l10n = S.of(context);
+    final authState = ref.read(authProvider);
+    if ((authState.host ?? '').isEmpty) {
+      SnackBarUtil.showWarning(context, l10n.supplementDownloadNeedServer);
+      return;
+    }
+
+    // 汇总所有作品 ID（已完成任务作品 + 磁盘目录作品）
+    final workIds = <int>{...groupedTasks.keys, ..._diskWorks.keys}.toList();
+    if (workIds.isEmpty) {
+      SnackBarUtil.showInfo(context, l10n.noLocalDownloads);
+      return;
+    }
+
+    final host = authState.host ?? '';
+    final token = authState.token ?? '';
+    final entries = <_WorkPickEntry>[];
+    for (final workId in workIds) {
+      final metadata = _metadataForWork(workId, groupedTasks);
+      entries.add(_WorkPickEntry(
+        workId: workId,
+        workTitle: (metadata?['title'] as String?) ?? 'RJ$workId',
+        metadata: metadata,
+        coverUrl: _coverUrlForWorkId(workId, host, token),
+      ));
+    }
+
+    final selected = await showDialog<List<int>>(
+      context: context,
+      builder: (context) => _WorkPickDialog(works: entries),
+    );
+    if (!mounted || selected == null) return;
+    if (selected.isEmpty) {
+      SnackBarUtil.showWarning(context, l10n.supplementSelectWorkFirst);
+      return;
+    }
+    await _runIntegrityCheck(groupedTasks, selected);
+  }
+
+  // 执行体检：进度对话框（可取消）→ 只带「有问题的作品」进结果对话框
+  Future<void> _runIntegrityCheck(
+      Map<int, List<DownloadTask>> groupedTasks, List<int> workIds) async {
+    final l10n = S.of(context);
+    final authState = ref.read(authProvider);
+    final host = authState.host ?? '';
+    final token = authState.token ?? '';
+
+    var dialogOpen = false;
+    var cancelled = false;
+    var doneCount = 0;
+    StateSetter? dialogSetState;
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => PopScope(
+          canPop: false,
+          child: StatefulBuilder(
+            builder: (context, setDialogState) {
+              dialogSetState = setDialogState;
+              return AlertDialog(
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2.5),
+                        ),
+                        const SizedBox(width: 16),
+                        Flexible(
+                          child: Text(
+                            doneCount == 0
+                                ? l10n.integrityChecking
+                                : l10n.integrityCheckingProgress(
+                                    doneCount, workIds.length),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: () {
+                        cancelled = true;
+                        Navigator.of(dialogContext).pop();
+                      },
+                      child: Text(l10n.cancel),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      );
+      dialogOpen = true;
+    }
+
+    try {
+      final titles = <int, String>{};
+      for (final workId in workIds) {
+        final metadata = _metadataForWork(workId, groupedTasks);
+        titles[workId] = (metadata?['title'] as String?) ?? 'RJ$workId';
+      }
+
+      final reports = await DownloadIntegrityService.instance.checkAll(
+        workIds,
+        titles: titles,
+        concurrency: _integrityConcurrency,
+        isCancelled: () => cancelled,
+        onProgress: (done, total) {
+          doneCount = done;
+          dialogSetState?.call(() {});
+        },
+      );
+
+      if (cancelled) return;
+
+      if (!mounted) return;
+      if (dialogOpen) {
+        dialogOpen = false;
+        Navigator.of(context).pop(); // 关闭进度对话框
+      }
+
+      final failedCount = reports.where((r) => r.error != null).length;
+      final problemReports =
+          reports.where((r) => r.hasProblem).toList(growable: false);
+
+      if (problemReports.isEmpty) {
+        final message = failedCount > 0
+            ? '${l10n.integrityAllGood}\n'
+                '${l10n.integrityCheckFailed(failedCount)}'
+            : l10n.integrityAllGood;
+        if (failedCount > 0) {
+          SnackBarUtil.showWarning(context, message);
+        } else {
+          SnackBarUtil.showSuccess(context, message);
+        }
+        return;
+      }
+
+      final scannedFiles =
+          reports.fold<int>(0, (sum, r) => sum + r.scannedCount);
+      final problemFiles =
+          problemReports.fold<int>(0, (sum, r) => sum + r.problemCount);
+
+      // 元数据 / 封面表：结果对话框里的「单文件重下」与「修复所选」都要用
+      final metadataByWork = <int, Map<String, dynamic>?>{};
+      final coverUrlByWork = <int, String?>{};
+      for (final workId in workIds) {
+        metadataByWork[workId] = _metadataForWork(workId, groupedTasks);
+        coverUrlByWork[workId] = _coverUrlForWorkId(workId, host, token);
+      }
+
+      final added = await showDialog<int>(
+        context: context,
+        builder: (context) => _IntegrityReportDialog(
+          works: problemReports,
+          scannedWorks: reports.length,
+          scannedFiles: scannedFiles,
+          problemFiles: problemFiles,
+          failedWorks: failedCount,
+          metadataByWork: metadataByWork,
+          coverUrlByWork: coverUrlByWork,
+        ),
+      );
+
+      if (!mounted || added == null) return;
+      if (added > 0) {
+        SnackBarUtil.showSuccess(context, l10n.integrityAddedToQueue(added));
+      } else {
+        SnackBarUtil.showWarning(context, l10n.integrityNoFixable);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      if (dialogOpen) {
+        dialogOpen = false;
+        try {
+          Navigator.of(context).pop();
+        } catch (_) {
+          // 对话框可能已关闭，忽略
+        }
+      }
+      SnackBarUtil.showError(
+          context, l10n.supplementDownloadFailed(e.toString()));
+    }
+  }
+
   Map<String, dynamic> _sanitizeMetadata(Map<String, dynamic> metadata) {
     try {
       return _deepSanitize(metadata) as Map<String, dynamic>;
@@ -1156,6 +1357,13 @@ class _LocalDownloadsScreenState extends ConsumerState<LocalDownloadsScreen>
             icon: Icons.cloud_download_outlined,
             tooltip: S.of(context).supplementDownload,
             onPressed: () => _pickWorksForSupplement(groupedTasks),
+          ),
+          // 下载体检：以「本地实际存在的文件」为基准回查在线树，
+          // 只报告"已经下载过、而且坏了"的文件，不会引导下载未下载过的版本
+          FloatingToolbarIconButton(
+            icon: Icons.health_and_safety_outlined,
+            tooltip: S.of(context).integrityCheck,
+            onPressed: () => _pickWorksForIntegrityCheck(groupedTasks),
           ),
           FloatingToolbarIconButton(
             icon: Icons.refresh,
@@ -1608,6 +1816,495 @@ class _WorkPickDialogState extends State<_WorkPickDialog> {
   }
 }
 
+/// 体检结果里可修复的一项：文件 + 它所属的作品。
+class _IntegrityTarget {
+  final int workId;
+  final FileIntegrityFinding finding;
+  const _IntegrityTarget(this.workId, this.finding);
+}
+
+/// 下载体检结果对话框。
+///
+/// 只展示**有问题的作品**，且每个作品下只列**异常文件**——所以不会出现
+/// 「补充下载对比」里那种"缺失 65 个"的多版本噪音。可修复项默认全选，
+/// 每行右侧还能单独重下（补上此前缺失的"单文件重下"入口）。
+class _IntegrityReportDialog extends StatefulWidget {
+  final List<WorkIntegrityReport> works;
+  final int scannedWorks;
+  final int scannedFiles;
+  final int problemFiles;
+  final int failedWorks;
+  final Map<int, Map<String, dynamic>?> metadataByWork;
+  final Map<int, String?> coverUrlByWork;
+
+  const _IntegrityReportDialog({
+    required this.works,
+    required this.scannedWorks,
+    required this.scannedFiles,
+    required this.problemFiles,
+    required this.failedWorks,
+    required this.metadataByWork,
+    required this.coverUrlByWork,
+  });
+
+  @override
+  State<_IntegrityReportDialog> createState() => _IntegrityReportDialogState();
+}
+
+class _IntegrityReportDialogState extends State<_IntegrityReportDialog> {
+  static const double _rowHeight = 44;
+  static const double _checkSlotWidth = 26;
+  static const double _badgeWidth = 84;
+
+  /// 选中的可修复文件，key 格式: '$workId::$relativePath'
+  final Set<String> _selected = {};
+
+  /// 已加入重下队列的文件（加入后勾选框与按钮一起置灰）
+  final Set<String> _queued = {};
+
+  /// 收起的作品（默认全部展开）
+  final Set<int> _collapsed = {};
+
+  String _query = '';
+  int _addedCount = 0;
+  bool _busy = false;
+
+  String _key(int workId, String path) => '$workId::$path';
+
+  @override
+  void initState() {
+    super.initState();
+    // 可修复项默认全选，一键修复；服务端已无文件的项不可修，不参与勾选
+    for (final w in widget.works) {
+      for (final f in w.problems) {
+        if (f.online != null) _selected.add(_key(w.workId, f.relativePath));
+      }
+    }
+  }
+
+  /// 搜索过滤：命中作品标题 / RJ 号 → 整个分组保留；否则只保留命中的文件。
+  List<WorkIntegrityReport> get _visibleWorks {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return widget.works;
+    final out = <WorkIntegrityReport>[];
+    for (final w in widget.works) {
+      if (w.workTitle.toLowerCase().contains(q) ||
+          'rj${w.workId}'.contains(q)) {
+        out.add(w);
+        continue;
+      }
+      final hits = w.problems
+          .where((f) =>
+              f.fileName.toLowerCase().contains(q) ||
+              f.relativePath.toLowerCase().contains(q))
+          .toList(growable: false);
+      if (hits.isNotEmpty) {
+        out.add(WorkIntegrityReport(
+          workId: w.workId,
+          workTitle: w.workTitle,
+          findings: hits,
+        ));
+      }
+    }
+    return out;
+  }
+
+  /// 当前可见范围内、已勾选且尚未入队的数量（决定底部按钮是否可用）
+  int get _fixableSelectedCount {
+    var n = 0;
+    for (final w in widget.works) {
+      for (final f in w.problems) {
+        if (f.online == null) continue;
+        final k = _key(w.workId, f.relativePath);
+        if (_selected.contains(k) && !_queued.contains(k)) n++;
+      }
+    }
+    return n;
+  }
+
+  Future<int> _enqueue(List<_IntegrityTarget> targets) async {
+    final byWork = <int, List<SupplementFile>>{};
+    for (final t in targets) {
+      final f = t.finding.online;
+      if (f == null) continue;
+      byWork.putIfAbsent(t.workId, () => []).add(f);
+    }
+    if (byWork.isEmpty) return 0;
+    var added = 0;
+    for (final e in byWork.entries) {
+      added += await DownloadService.instance.supplementDownloads(
+        e.key,
+        e.value,
+        workMetadata: widget.metadataByWork[e.key],
+        coverUrl: widget.coverUrlByWork[e.key],
+      );
+    }
+    return added;
+  }
+
+  // 行内「重下」：只把这一个文件加入队列
+  Future<void> _redownloadOne(
+      WorkIntegrityReport work, FileIntegrityFinding finding) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final n = await _enqueue([_IntegrityTarget(work.workId, finding)]);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      if (n > 0) {
+        _queued.add(_key(work.workId, finding.relativePath));
+        _addedCount += n;
+      }
+    });
+  }
+
+  // 底部「修复所选」：批量入队后关闭对话框（把加入数量交回调用方提示）
+  Future<void> _fixSelected() async {
+    if (_busy) return;
+    final targets = <_IntegrityTarget>[];
+    for (final w in widget.works) {
+      for (final f in w.problems) {
+        if (f.online == null) continue;
+        final k = _key(w.workId, f.relativePath);
+        if (_selected.contains(k) && !_queued.contains(k)) {
+          targets.add(_IntegrityTarget(w.workId, f));
+        }
+      }
+    }
+    if (targets.isEmpty) {
+      Navigator.pop(context, _addedCount == 0 ? null : _addedCount);
+      return;
+    }
+    setState(() => _busy = true);
+    final n = await _enqueue(targets);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _addedCount += n;
+      for (final t in targets) {
+        _queued.add(_key(t.workId, t.finding.relativePath));
+      }
+    });
+    Navigator.pop(context, _addedCount);
+  }
+
+  String _verdictLabel(S l10n, FileIntegrityVerdict v) {
+    switch (v) {
+      case FileIntegrityVerdict.zeroByte:
+        return l10n.integrityVerdictZeroByte;
+      case FileIntegrityVerdict.shortSize:
+        return l10n.integrityVerdictShortSize;
+      case FileIntegrityVerdict.oversize:
+        return l10n.integrityVerdictOversize;
+      case FileIntegrityVerdict.headerCorrupt:
+        return l10n.integrityVerdictHeaderCorrupt;
+      case FileIntegrityVerdict.notOnServer:
+        return l10n.integrityVerdictNotOnServer;
+      case FileIntegrityVerdict.ok:
+        return '';
+    }
+  }
+
+  Color _verdictColor(ColorScheme cs, FileIntegrityVerdict v) =>
+      v == FileIntegrityVerdict.notOnServer ? cs.outline : cs.error;
+
+  Widget _buildWorkHeader(WorkIntegrityReport work, bool collapsed) {
+    final cs = Theme.of(context).colorScheme;
+    final l10n = S.of(context);
+    return InkWell(
+      onTap: () => setState(() {
+        if (!_collapsed.remove(work.workId)) _collapsed.add(work.workId);
+      }),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+        color: cs.errorContainer.withValues(alpha: 0.32),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                'RJ${work.workId}  ${work.workTitle}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              l10n.integrityProblemCount(work.problemCount),
+              style: TextStyle(fontSize: 11, color: cs.error),
+            ),
+            Icon(
+              collapsed ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_up,
+              size: 18,
+              color: cs.outline,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 单行：勾选框 + 判据徽章 + 文件名（主干/扩展名拆开）+ 本地/在线大小 + 重下
+  Widget _buildFindingRow(
+    WorkIntegrityReport work,
+    FileIntegrityFinding finding, {
+    required bool showDivider,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final l10n = S.of(context);
+    final key = _key(work.workId, finding.relativePath);
+    final fixable = finding.online != null;
+    final queued = _queued.contains(key);
+    final selected = _selected.contains(key);
+
+    // 主干与扩展名拆成两个 Text，避免 .wav / .mp3 这类关键后缀被省略号吃掉
+    final dot = finding.fileName.lastIndexOf('.');
+    final stem =
+        dot > 0 ? finding.fileName.substring(0, dot) : finding.fileName;
+    final ext = dot > 0 ? finding.fileName.substring(dot) : '';
+
+    final verdictColor = _verdictColor(cs, finding.verdict);
+
+    return Container(
+      height: _rowHeight,
+      decoration: BoxDecoration(
+        border: showDivider
+            ? Border(bottom: BorderSide(color: cs.outlineVariant, width: 0.5))
+            : null,
+      ),
+      child: Row(
+        children: [
+          const SizedBox(width: 8),
+          SizedBox(
+            width: _checkSlotWidth,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: fixable
+                  ? Checkbox(
+                      value: selected,
+                      visualDensity: VisualDensity.compact,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      onChanged: queued
+                          ? null
+                          : (v) => setState(() {
+                                if (v == true) {
+                                  _selected.add(key);
+                                } else {
+                                  _selected.remove(key);
+                                }
+                              }),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ),
+          SizedBox(
+            width: _badgeWidth,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: verdictColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  _verdictLabel(l10n, finding.verdict),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: verdictColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    stem,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                ),
+                if (ext.isNotEmpty)
+                  Text(
+                    ext,
+                    maxLines: 1,
+                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            formatBytes(finding.localSize),
+            style: TextStyle(fontSize: 11, color: cs.error),
+          ),
+          if (finding.onlineSize != null && finding.onlineSize! > 0) ...[
+            Text(' / ', style: TextStyle(fontSize: 11, color: cs.outline)),
+            Text(
+              formatBytes(finding.onlineSize!),
+              style: TextStyle(fontSize: 11, color: cs.outline),
+            ),
+          ],
+          const SizedBox(width: 4),
+          if (!fixable)
+            const SizedBox(width: 8)
+          else if (queued)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              child: Text(
+                l10n.integrityQueued,
+                style: TextStyle(fontSize: 11, color: cs.primary),
+              ),
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.refresh, size: 18),
+              visualDensity: VisualDensity.compact,
+              tooltip: l10n.integrityRedownload,
+              onPressed: _busy
+                  ? null
+                  : () => _redownloadOne(work, finding),
+            ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = S.of(context);
+    final cs = Theme.of(context).colorScheme;
+    final visible = _visibleWorks;
+    final fixableSelected = _fixableSelectedCount;
+
+    return AlertDialog(
+      // 收紧左右留白（默认 40），行条内能多显示几个字符
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+      title: Text(l10n.integrityCheck),
+      contentPadding: EdgeInsets.zero,
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 520,
+        child: Column(
+          children: [
+            // 摘要条：扫描范围 + 异常数（全量口径，不随搜索变化）
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 6, 20, 6),
+              color: cs.surfaceContainerHighest.withValues(alpha: 0.6),
+              child: Text(
+                l10n.integritySummary(
+                  widget.scannedWorks,
+                  widget.scannedFiles,
+                  widget.problemFiles,
+                ),
+                style: TextStyle(fontSize: 12, color: cs.onSurface),
+              ),
+            ),
+            if (widget.failedWorks > 0)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(20, 6, 20, 6),
+                color: cs.errorContainer.withValues(alpha: 0.5),
+                child: Text(
+                  l10n.integrityCheckFailed(widget.failedWorks),
+                  style: TextStyle(fontSize: 12, color: cs.onErrorContainer),
+                ),
+              ),
+            // 搜索：作品多、异常多时按文件名/作品名快速定位
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              child: TextField(
+                style: const TextStyle(fontSize: 13),
+                onChanged: (v) => setState(() => _query = v),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: l10n.search,
+                  prefixIcon: const Icon(Icons.search, size: 18),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              child: visible.isEmpty
+                  ? Center(
+                      child: Text(
+                        '—',
+                        style: TextStyle(color: cs.outline, fontSize: 20),
+                      ),
+                    )
+                  : ListView.builder(
+                      // 独立滚动位置，避免继承外层页面的 PrimaryScrollController
+                      primary: false,
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                      itemCount: visible.length,
+                      itemBuilder: (context, i) {
+                        final work = visible[i];
+                        final collapsed = _collapsed.contains(work.workId);
+                        final rows = work.problems;
+                        return Padding(
+                          padding: EdgeInsets.only(
+                            bottom: i != visible.length - 1 ? 12 : 0,
+                          ),
+                          child: Container(
+                            clipBehavior: Clip.antiAlias,
+                            decoration: BoxDecoration(
+                              border: Border.all(color: cs.outlineVariant),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _buildWorkHeader(work, collapsed),
+                                if (!collapsed)
+                                  for (var r = 0; r < rows.length; r++)
+                                    _buildFindingRow(
+                                      work,
+                                      rows[r],
+                                      showDivider: r != rows.length - 1,
+                                    ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy
+              ? null
+              : () => Navigator.pop(
+                    context,
+                    _addedCount == 0 ? null : _addedCount,
+                  ),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          onPressed: _busy || fixableSelected == 0 ? null : _fixSelected,
+          child: Text(l10n.integrityFixSelected(fixableSelected)),
+        ),
+      ],
+    );
+  }
+}
+
 class _WorkSupplementEntry {
   final int workId;
   final String workTitle;
@@ -1659,6 +2356,12 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
   // 收起的作品集合（默认全部展开）：点分组头或「全部收起」切换，
   // 收起后只留标题条，一屏能看到更多音声
   final Set<int> _collapsedWorks = {};
+
+  // 搜索词：按文件名过滤缺失项，并保留其祖先文件夹行
+  String _searchQuery = '';
+
+  /// 是否处于搜索态（搜索时无视收起状态，否则收起作品里的文件搜不到）
+  bool get _searching => _searchQuery.trim().isNotEmpty;
 
   int get _selectedFileCount => _selected.length;
 
@@ -1769,11 +2472,12 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     });
   }
 
-  // 平铺所有可见树行（含分组顺序）
-  List<_TreeRow> _buildRows() {
+  // 平铺所有可见树行（含分组顺序）。
+  // [ignoreCollapse] 为真时无视文件夹展开状态——搜索必须能看到收起目录里的文件。
+  List<_TreeRow> _buildRows({bool ignoreCollapse = false}) {
     final rows = <_TreeRow>[];
     for (final w in widget.works) {
-      _appendRows(rows, w, w.tree, 0);
+      _appendRows(rows, w, w.tree, 0, ignoreCollapse);
     }
     return rows;
   }
@@ -1783,14 +2487,47 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
     _WorkSupplementEntry work,
     List<SupplementFileNode> nodes,
     int depth,
+    bool ignoreCollapse,
   ) {
     for (final node in nodes) {
       rows.add(_TreeRow(work: work, node: node, depth: depth));
       if (node.isFolder &&
-          _expanded.contains(_key(work.workId, node.localRelativePath))) {
-        _appendRows(rows, work, node.children, depth + 1);
+          (ignoreCollapse ||
+              _expanded.contains(_key(work.workId, node.localRelativePath)))) {
+        _appendRows(rows, work, node.children, depth + 1, ignoreCollapse);
       }
     }
+  }
+
+  /// 搜索过滤：只保留命中的文件行，加上它们的祖先文件夹行（折叠成一条路径）。
+  /// 无搜索词时原样返回，零开销。
+  List<_TreeRow> _visibleRows(List<_TreeRow> all) {
+    final q = _searchQuery.trim().toLowerCase();
+    if (q.isEmpty) return all;
+    final keep = <int>{};
+    for (var i = 0; i < all.length; i++) {
+      final node = all[i].node;
+      if (node.isFolder) continue;
+      if (!node.title.toLowerCase().contains(q) &&
+          !node.localRelativePath.toLowerCase().contains(q)) {
+        continue;
+      }
+      keep.add(i);
+      // 回溯祖先：depth 恰好减 1 的最近一段行就是父链，
+      // 不跨作品回溯（平铺表里多个作品的树是首尾相接的）
+      var need = all[i].depth;
+      for (var j = i - 1; j >= 0 && need > 0; j--) {
+        if (all[j].work.workId != all[i].work.workId) break;
+        if (all[j].depth == need - 1) {
+          keep.add(j);
+          need--;
+        }
+      }
+    }
+    return [
+      for (var i = 0; i < all.length; i++)
+        if (keep.contains(i)) all[i],
+    ];
   }
 
   // 根据扩展名选择合适的文件图标
@@ -2067,12 +2804,19 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
   Widget build(BuildContext context) {
     final l10n = S.of(context);
     final cs = Theme.of(context).colorScheme;
-    final rows = _buildRows();
+    // 搜索时无视收起状态：否则收起作品里的文件搜不到
+    final rows = _visibleRows(_buildRows(ignoreCollapse: _searching));
     // 按作品 ID 分组行
     final grouped = <int, List<_TreeRow>>{};
     for (final r in rows) {
       grouped.putIfAbsent(r.work.workId, () => []).add(r);
     }
+    // 搜索态下只渲染有命中的作品，避免一屏全是空标题条
+    final displayWorks = _searching
+        ? widget.works
+            .where((w) => grouped.containsKey(w.workId))
+            .toList(growable: false)
+        : widget.works;
     final totalMissing =
         widget.works.fold<int>(0, (sum, w) => sum + w.missingCount);
     return AlertDialog(
@@ -2128,23 +2872,41 @@ class _SupplementDiffDialogState extends State<_SupplementDiffDialog> {
                 ],
               ),
             ),
+            // 搜索：音声/缺失项多时按文件名快速定位（保留祖先目录行）
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              child: TextField(
+                style: const TextStyle(fontSize: 13),
+                onChanged: (v) => setState(() => _searchQuery = v),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: l10n.search,
+                  prefixIcon: const Icon(Icons.search, size: 18),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ),
             Expanded(
               // 按需构建分组卡片：封面解析只发生在可见的分组上
               child: ListView.builder(
                 // 独立滚动位置，避免继承外层页面的 PrimaryScrollController
                 primary: false,
                 padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                itemCount: widget.works.length,
+                itemCount: displayWorks.length,
                 itemBuilder: (context, i) {
-                  final work = widget.works[i];
-                  // 收起的作品不渲染行条，只留标题条
-                  final collapsed = _collapsedWorks.contains(work.workId);
+                  final work = displayWorks[i];
+                  // 收起的作品不渲染行条，只留标题条；搜索态下强制展开
+                  final collapsed =
+                      !_searching && _collapsedWorks.contains(work.workId);
                   final workRows = collapsed
                       ? const <_TreeRow>[]
                       : (grouped[work.workId] ?? const <_TreeRow>[]);
                   return Padding(
                     padding: EdgeInsets.only(
-                      bottom: i != widget.works.length - 1 ? 12 : 0,
+                      bottom: i != displayWorks.length - 1 ? 12 : 0,
                     ),
                     // 分组卡片：标题条 + 行条
                     child: Container(

@@ -6917,6 +6917,108 @@ abstract class S {
   /// In en, this message translates to:
   /// **'List'**
   String get playlistDisplayFormatList;
+
+  /// No description provided for @integrityCheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Download Checkup'**
+  String get integrityCheck;
+
+  /// No description provided for @integrityChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking downloaded files...'**
+  String get integrityChecking;
+
+  /// No description provided for @integrityCheckingProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'{count}/{total} works checked...'**
+  String integrityCheckingProgress(int count, int total);
+
+  /// No description provided for @integritySummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{works} works · {files} files · {problems} problems'**
+  String integritySummary(int works, int files, int problems);
+
+  /// No description provided for @integrityAllGood.
+  ///
+  /// In en, this message translates to:
+  /// **'All downloaded files look intact'**
+  String get integrityAllGood;
+
+  /// No description provided for @integrityCheckFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} work(s) failed to check and were skipped'**
+  String integrityCheckFailed(int count);
+
+  /// No description provided for @integrityVerdictZeroByte.
+  ///
+  /// In en, this message translates to:
+  /// **'0 bytes'**
+  String get integrityVerdictZeroByte;
+
+  /// No description provided for @integrityVerdictShortSize.
+  ///
+  /// In en, this message translates to:
+  /// **'Truncated'**
+  String get integrityVerdictShortSize;
+
+  /// No description provided for @integrityVerdictOversize.
+  ///
+  /// In en, this message translates to:
+  /// **'Oversized'**
+  String get integrityVerdictOversize;
+
+  /// No description provided for @integrityVerdictHeaderCorrupt.
+  ///
+  /// In en, this message translates to:
+  /// **'Corrupt header'**
+  String get integrityVerdictHeaderCorrupt;
+
+  /// No description provided for @integrityVerdictNotOnServer.
+  ///
+  /// In en, this message translates to:
+  /// **'Removed from server'**
+  String get integrityVerdictNotOnServer;
+
+  /// No description provided for @integrityProblemCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} problem(s)'**
+  String integrityProblemCount(int count);
+
+  /// No description provided for @integrityRedownload.
+  ///
+  /// In en, this message translates to:
+  /// **'Re-download'**
+  String get integrityRedownload;
+
+  /// No description provided for @integrityFixSelected.
+  ///
+  /// In en, this message translates to:
+  /// **'Fix {count} file(s)'**
+  String integrityFixSelected(int count);
+
+  /// No description provided for @integrityAddedToQueue.
+  ///
+  /// In en, this message translates to:
+  /// **'Added {count} file(s) to the download queue'**
+  String integrityAddedToQueue(int count);
+
+  /// No description provided for @integrityQueued.
+  ///
+  /// In en, this message translates to:
+  /// **'Queued'**
+  String get integrityQueued;
+
+  /// No description provided for @integrityNoFixable.
+  ///
+  /// In en, this message translates to:
+  /// **'No fixable file selected'**
+  String get integrityNoFixable;
 }
 
 class _SDelegate extends LocalizationsDelegate<S> {

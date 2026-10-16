@@ -1252,5 +1252,23 @@
   "proxyModeManualDescription": "使用下方設定的 HTTP 代理",
   "playlistDisplayFormat": "播放清單版面",
   "playlistDisplayFormatMasonry": "瀑布流",
-  "playlistDisplayFormatList": "列表"
+  "playlistDisplayFormatList": "列表",
+
+  "integrityCheck": "下載健檢",
+  "integrityChecking": "正在健檢本機檔案...",
+  "integrityCheckingProgress": "正在健檢 {count}/{total} 個音聲...",
+  "integritySummary": "{works} 個音聲 · {files} 個檔案 · {problems} 個異常",
+  "integrityAllGood": "未發現異常，本機檔案完整",
+  "integrityCheckFailed": "{count} 個音聲健檢失敗已跳過",
+  "integrityVerdictZeroByte": "0 位元組",
+  "integrityVerdictShortSize": "內容缺失",
+  "integrityVerdictOversize": "體積偏大",
+  "integrityVerdictHeaderCorrupt": "檔案頭損壞",
+  "integrityVerdictNotOnServer": "伺服器已無此檔案",
+  "integrityProblemCount": "{count} 個異常",
+  "integrityRedownload": "重下",
+  "integrityFixSelected": "修復 {count} 個檔案",
+  "integrityAddedToQueue": "已加入 {count} 個重下任務",
+  "integrityQueued": "已加入",
+  "integrityNoFixable": "沒有選中可修復的檔案"
 }

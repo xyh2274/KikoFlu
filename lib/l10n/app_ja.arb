@@ -1263,5 +1263,23 @@
   "proxyModeManualDescription": "下で設定した HTTP プロキシを使用",
   "playlistDisplayFormat": "プレイリストの表示形式",
   "playlistDisplayFormatMasonry": "ウォーターフォール",
-  "playlistDisplayFormatList": "リスト"
+  "playlistDisplayFormatList": "リスト",
+
+  "integrityCheck": "ダウンロード健診",
+  "integrityChecking": "ローカルのファイルを検査しています...",
+  "integrityCheckingProgress": "{count}/{total} 件を検査中...",
+  "integritySummary": "{works} 作品 · {files} ファイル · {problems} 件の異常",
+  "integrityAllGood": "異常は見つかりませんでした",
+  "integrityCheckFailed": "{count} 件の検査に失敗しました",
+  "integrityVerdictZeroByte": "0 バイト",
+  "integrityVerdictShortSize": "データ欠損",
+  "integrityVerdictOversize": "サイズ超過",
+  "integrityVerdictHeaderCorrupt": "ヘッダ破損",
+  "integrityVerdictNotOnServer": "サーバーに存在しません",
+  "integrityProblemCount": "{count} 件の異常",
+  "integrityRedownload": "再ダウンロード",
+  "integrityFixSelected": "{count} 件を修復",
+  "integrityAddedToQueue": "{count} 件を再ダウンロードに追加しました",
+  "integrityQueued": "追加済み",
+  "integrityNoFixable": "修復可能なファイルが選択されていません"
 }

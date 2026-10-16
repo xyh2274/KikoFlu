@@ -3760,6 +3760,69 @@ class SZh extends S {
 
   @override
   String get playlistDisplayFormatList => '列表';
+
+  @override
+  String get integrityCheck => '下载体检';
+
+  @override
+  String get integrityChecking => '正在体检本地文件...';
+
+  @override
+  String integrityCheckingProgress(int count, int total) {
+    return '正在体检 $count/$total 个音声...';
+  }
+
+  @override
+  String integritySummary(int works, int files, int problems) {
+    return '$works 个音声 · $files 个文件 · $problems 个异常';
+  }
+
+  @override
+  String get integrityAllGood => '未发现异常，本地文件完整';
+
+  @override
+  String integrityCheckFailed(int count) {
+    return '$count 个音声体检失败已跳过';
+  }
+
+  @override
+  String get integrityVerdictZeroByte => '0 字节';
+
+  @override
+  String get integrityVerdictShortSize => '内容缺失';
+
+  @override
+  String get integrityVerdictOversize => '体积偏大';
+
+  @override
+  String get integrityVerdictHeaderCorrupt => '文件头损坏';
+
+  @override
+  String get integrityVerdictNotOnServer => '服务器已无此文件';
+
+  @override
+  String integrityProblemCount(int count) {
+    return '$count 个异常';
+  }
+
+  @override
+  String get integrityRedownload => '重下';
+
+  @override
+  String integrityFixSelected(int count) {
+    return '修复 $count 个文件';
+  }
+
+  @override
+  String integrityAddedToQueue(int count) {
+    return '已加入 $count 个重下任务';
+  }
+
+  @override
+  String get integrityQueued => '已加入';
+
+  @override
+  String get integrityNoFixable => '没有选中可修复的文件';
 }
 
 /// The translations for Chinese, using the Han script (`zh_Hant`).
@@ -7491,4 +7554,67 @@ class SZhHant extends SZh {
 
   @override
   String get playlistDisplayFormatList => '列表';
+
+  @override
+  String get integrityCheck => '下載健檢';
+
+  @override
+  String get integrityChecking => '正在健檢本機檔案...';
+
+  @override
+  String integrityCheckingProgress(int count, int total) {
+    return '正在健檢 $count/$total 個音聲...';
+  }
+
+  @override
+  String integritySummary(int works, int files, int problems) {
+    return '$works 個音聲 · $files 個檔案 · $problems 個異常';
+  }
+
+  @override
+  String get integrityAllGood => '未發現異常，本機檔案完整';
+
+  @override
+  String integrityCheckFailed(int count) {
+    return '$count 個音聲健檢失敗已跳過';
+  }
+
+  @override
+  String get integrityVerdictZeroByte => '0 位元組';
+
+  @override
+  String get integrityVerdictShortSize => '內容缺失';
+
+  @override
+  String get integrityVerdictOversize => '體積偏大';
+
+  @override
+  String get integrityVerdictHeaderCorrupt => '檔案頭損壞';
+
+  @override
+  String get integrityVerdictNotOnServer => '伺服器已無此檔案';
+
+  @override
+  String integrityProblemCount(int count) {
+    return '$count 個異常';
+  }
+
+  @override
+  String get integrityRedownload => '重下';
+
+  @override
+  String integrityFixSelected(int count) {
+    return '修復 $count 個檔案';
+  }
+
+  @override
+  String integrityAddedToQueue(int count) {
+    return '已加入 $count 個重下任務';
+  }
+
+  @override
+  String get integrityQueued => '已加入';
+
+  @override
+  String get integrityNoFixable => '沒有選中可修復的檔案';
 }

@@ -3780,4 +3780,67 @@ class SJa extends S {
 
   @override
   String get playlistDisplayFormatList => 'リスト';
+
+  @override
+  String get integrityCheck => 'ダウンロード健診';
+
+  @override
+  String get integrityChecking => 'ローカルのファイルを検査しています...';
+
+  @override
+  String integrityCheckingProgress(int count, int total) {
+    return '$count/$total 件を検査中...';
+  }
+
+  @override
+  String integritySummary(int works, int files, int problems) {
+    return '$works 作品 · $files ファイル · $problems 件の異常';
+  }
+
+  @override
+  String get integrityAllGood => '異常は見つかりませんでした';
+
+  @override
+  String integrityCheckFailed(int count) {
+    return '$count 件の検査に失敗しました';
+  }
+
+  @override
+  String get integrityVerdictZeroByte => '0 バイト';
+
+  @override
+  String get integrityVerdictShortSize => 'データ欠損';
+
+  @override
+  String get integrityVerdictOversize => 'サイズ超過';
+
+  @override
+  String get integrityVerdictHeaderCorrupt => 'ヘッダ破損';
+
+  @override
+  String get integrityVerdictNotOnServer => 'サーバーに存在しません';
+
+  @override
+  String integrityProblemCount(int count) {
+    return '$count 件の異常';
+  }
+
+  @override
+  String get integrityRedownload => '再ダウンロード';
+
+  @override
+  String integrityFixSelected(int count) {
+    return '$count 件を修復';
+  }
+
+  @override
+  String integrityAddedToQueue(int count) {
+    return '$count 件を再ダウンロードに追加しました';
+  }
+
+  @override
+  String get integrityQueued => '追加済み';
+
+  @override
+  String get integrityNoFixable => '修復可能なファイルが選択されていません';
 }

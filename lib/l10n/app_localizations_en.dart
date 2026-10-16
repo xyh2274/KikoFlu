@@ -3889,4 +3889,67 @@ class SEn extends S {
 
   @override
   String get playlistDisplayFormatList => 'List';
+
+  @override
+  String get integrityCheck => 'Download Checkup';
+
+  @override
+  String get integrityChecking => 'Checking downloaded files...';
+
+  @override
+  String integrityCheckingProgress(int count, int total) {
+    return '$count/$total works checked...';
+  }
+
+  @override
+  String integritySummary(int works, int files, int problems) {
+    return '$works works · $files files · $problems problems';
+  }
+
+  @override
+  String get integrityAllGood => 'All downloaded files look intact';
+
+  @override
+  String integrityCheckFailed(int count) {
+    return '$count work(s) failed to check and were skipped';
+  }
+
+  @override
+  String get integrityVerdictZeroByte => '0 bytes';
+
+  @override
+  String get integrityVerdictShortSize => 'Truncated';
+
+  @override
+  String get integrityVerdictOversize => 'Oversized';
+
+  @override
+  String get integrityVerdictHeaderCorrupt => 'Corrupt header';
+
+  @override
+  String get integrityVerdictNotOnServer => 'Removed from server';
+
+  @override
+  String integrityProblemCount(int count) {
+    return '$count problem(s)';
+  }
+
+  @override
+  String get integrityRedownload => 'Re-download';
+
+  @override
+  String integrityFixSelected(int count) {
+    return 'Fix $count file(s)';
+  }
+
+  @override
+  String integrityAddedToQueue(int count) {
+    return 'Added $count file(s) to the download queue';
+  }
+
+  @override
+  String get integrityQueued => 'Queued';
+
+  @override
+  String get integrityNoFixable => 'No fixable file selected';
 }
