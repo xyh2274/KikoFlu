@@ -255,9 +255,6 @@ void main(List<String> args) async {
   await ProxyConfig.init();
   HttpOverrides.global = KikoFluHttpOverrides();
 
-  // 初始化日志系统，拦截 print/debugPrint 输出
-  setupLogCapture();
-
   if (args.firstOrNull == 'multi_window') {
     final windowId = args.length > 1 ? args[1] : '0';
     Map<String, dynamic> argument;
@@ -281,6 +278,11 @@ void main(List<String> args) async {
     ));
     return;
   }
+
+  // 初始化日志系统：拦截 print/debugPrint 输出，并开启滚动落盘。
+  // 刻意放在 multi_window 分支之后 —— 悬浮歌词窗是独立进程，若与主窗口
+  // 同时写同一份日志文件会互相踩踏（轮转会互相删掉对方的文件）。
+  await setupLogCapture();
 
   // Use media_kit only for desktop platforms. Android is natively supported
   // by just_audio and should stay on its Media3/AudioTrack backend.
@@ -448,6 +450,9 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
       PlaybackHistoryService.instance
           .flushNow(reason: FlushReason.appBackground);
       AudioPlayerService.instance.persistPlaybackPosition();
+      // 进程随时可能被系统回收，日志先落盘 —— 恰恰是崩溃/被清理前
+      // 那几行最有排查价值，不能只留在内存里。
+      unawaited(LogService.instance.flushLogFile());
     }
   }
 
@@ -456,6 +461,7 @@ class _KikoeruAppState extends ConsumerState<KikoeruApp>
     // 桌面端关闭窗口时 flush 播放历史
     await PlaybackHistoryService.instance.flushNow(reason: FlushReason.dispose);
     await AudioPlayerService.instance.persistPlaybackPosition();
+    await LogService.instance.flushLogFile();
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
       // 关闭主窗口时，同时关闭悬浮字幕窗口
       await FloatingLyricService.instance.hide();

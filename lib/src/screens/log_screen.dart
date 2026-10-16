@@ -93,6 +93,8 @@ class _LogScreenState extends State<LogScreen> {
         break;
       case 'clear':
         LogService.instance.clear();
+        // 内存与落盘都要清，否则「清空」后重新打开还能看到旧日志。
+        await LogService.instance.clearPersistedLogs();
         _updateFilteredLogs();
         break;
     }
@@ -100,7 +102,7 @@ class _LogScreenState extends State<LogScreen> {
 
   Future<void> _copyLogs(S l10n) async {
     await Clipboard.setData(
-      ClipboardData(text: LogService.instance.exportAsText()),
+      ClipboardData(text: await LogService.instance.exportCombinedText()),
     );
     if (!mounted) return;
     SnackBarUtil.showSuccess(context, l10n.logCopied);
@@ -109,7 +111,7 @@ class _LogScreenState extends State<LogScreen> {
   Future<void> _exportLogs(S l10n) async {
     try {
       final logService = LogService.instance;
-      final content = logService.exportAsText();
+      final content = await logService.exportCombinedText();
       final fileName = logService.exportFileName;
 
       // 移动端（iOS/Android）必须直接传字节：Android 的 saveFile 走 SAF，
