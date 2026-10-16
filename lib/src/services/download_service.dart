@@ -972,9 +972,26 @@ class DownloadService {
       if (await tempFile.exists()) {
         downloadedBytes = await tempFile.length();
         if (downloadedBytes > 0) {
-          isResuming = true;
-          _log.info('发现临时文件，尝试断点续传: ${task.fileName}, 已下载 ${StorageSpaceService.formatBytes(downloadedBytes)}',
-              tag: 'Download');
+          // ⚠️ 续传前必须确认临时文件头部仍是合法容器。
+          // 若历史事故（Range 头错位 / 被污染的 206 响应体）导致临时文件里存的
+          // 是「服务端中后段」数据，它的长度看似合理，但开头是音频中间而不是
+          // 容器头。此时若直接 append，会落盘成「总长度恰好正常、内容整体错位」
+          // 的文件 —— 之后任何基于大小的校验都发现不了。
+          // 头部非法即丢弃临时文件，下次从 0 重新下载。
+          if (await isCorruptMediaFile(tempFile, task.fileName)) {
+            _log.warning(
+              '临时文件头部非法（疑似错位落盘），丢弃后重新下载: ${task.fileName}',
+              tag: 'Download',
+            );
+            try {
+              await tempFile.delete();
+            } catch (_) {}
+            downloadedBytes = 0;
+          } else {
+            isResuming = true;
+            _log.info('发现临时文件，尝试断点续传: ${task.fileName}, 已下载 ${StorageSpaceService.formatBytes(downloadedBytes)}',
+                tag: 'Download');
+          }
         }
       }
 
@@ -1004,6 +1021,7 @@ class DownloadService {
 
       // 检查服务器是否支持断点续传（返回 206 表示支持）
       final statusCode = response.statusCode ?? 0;
+      int? rangeTotal; // Content-Range 声明的「完整文件大小」
       if (isResuming && statusCode != 206) {
         _log.warning('服务器不支持断点续传（状态码: $statusCode），重新开始下载',
             tag: 'Download');
@@ -1013,14 +1031,48 @@ class DownloadService {
         }
         downloadedBytes = 0;
         isResuming = false;
+      } else if (isResuming && statusCode == 206) {
+        // ⚠️ 不能只看「是不是 206」，必须核对服务端返回的区间起点是否就等于
+        // 我们请求的偏移。历史事故：Range 请求头被 `_dio` 的全局 headers 污染后，
+        // 服务端按「别人的偏移」返回 206，代码无条件 append，最终落盘成
+        // 「服务端中后段 + 本地旧数据」的混合体；其总长度可能恰好正常，
+        // 大小校验完全发现不了。
+        final servedRange = response.headers.value('content-range');
+        final match = servedRange == null
+            ? null
+            : RegExp(r'^\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*$', caseSensitive: false)
+                .firstMatch(servedRange);
+        final servedStart = match == null ? null : int.tryParse(match.group(1)!);
+        if (servedStart == null || servedStart != downloadedBytes) {
+          _log.error(
+            '续传区间校验失败: ${task.fileName}, 请求偏移 $downloadedBytes, '
+            '服务端 Content-Range=${servedRange ?? '(缺失)'}',
+            tag: 'Download',
+          );
+          // 该响应体属于错误区间，绝不能落盘：释放流 + 丢弃临时文件后重下。
+          await _abortResponseStream(response.data!);
+          try {
+            if (await tempFile.exists()) await tempFile.delete();
+          } catch (_) {}
+          _cancelTokens.remove(task.id);
+          _scheduleRetry(task, '续传区间与服务端返回不一致，已清理临时文件，将重新下载');
+          return;
+        }
+        final totalGroup = match?.group(3);
+        if (totalGroup != null && totalGroup != '*') {
+          rangeTotal = int.tryParse(totalGroup);
+        }
       }
 
-      // 获取文件总大小
+      // 获取文件总大小。206 时优先采用 Content-Range 声明的总长度
+      // （比 content-length + 已下载 更权威，且在服务端用 chunked 传输、
+      // 不返回 content-length 时仍然可用）。
       final contentLengthHeader = response.headers.value('content-length');
       final contentLength = contentLengthHeader != null ? int.tryParse(contentLengthHeader) : null;
-      final totalBytes = isResuming && contentLength != null
-          ? contentLength + downloadedBytes
-          : contentLength;
+      final totalBytes = rangeTotal ??
+          (isResuming && contentLength != null
+              ? contentLength + downloadedBytes
+              : contentLength);
 
       // 打开文件（追加或覆盖模式）
       final fileSink = await tempFile.open(
@@ -1055,14 +1107,28 @@ class DownloadService {
       }
 
       // O2: 下载文件大小完整性校验（服务器未报告大小或无预期大小则跳过）
+      //
+      // ⚠️ 必须用「不等于」而不是「小于」：
+      //   a) 偏小 —— 续传错位后只写入了服务端中后段，长度不足；
+      //   b) 偏大 —— 旧数据未截断就被新数据覆盖，或重复追加。
+      // 只挡偏小会让 (b) 类损坏"下载成功"落盘。
+      // 例外：响应带 Content-Encoding（压缩）时，Content-Length 是压缩后长度，
+      // 与实际落盘字节不可比，此时跳过严格校验（媒体文件极少走压缩）。
       final currentTaskBeforeRename =
           _tasks.firstWhere((t) => t.id == task.id, orElse: () => task);
       final expectedBytes =
           currentTaskBeforeRename.totalBytes ?? task.totalBytes;
       final actualBytes = await tempFile.length();
-      if (expectedBytes != null &&
+      final contentEncoding = response.headers.value('content-encoding');
+      final isCompressed = contentEncoding != null &&
+          contentEncoding.isNotEmpty &&
+          contentEncoding.toLowerCase() != 'identity';
+      if (!isCompressed &&
+          expectedBytes != null &&
           expectedBytes > 0 &&
-          actualBytes < expectedBytes) {
+          actualBytes != expectedBytes) {
+        final reason =
+            actualBytes < expectedBytes ? '文件不完整（字节数偏少）' : '文件异常（字节数偏多，疑似重复/覆盖写入）';
         _log.error(
           '完整性校验失败: ${task.fileName}, 预期 $expectedBytes 字节, 实际 $actualBytes 字节',
           tag: 'Download',
@@ -1074,7 +1140,7 @@ class DownloadService {
         _updateTask(
           task.copyWith(
             status: DownloadStatus.failed,
-            error: '完整性校验失败：下载文件不完整（预期 ${StorageSpaceService.formatBytes(expectedBytes)}, 实际 ${StorageSpaceService.formatBytes(actualBytes)}）',
+            error: '完整性校验失败：$reason（预期 ${StorageSpaceService.formatBytes(expectedBytes)}, 实际 ${StorageSpaceService.formatBytes(actualBytes)}）',
           ),
           immediate: true,
         );
@@ -1263,6 +1329,21 @@ class DownloadService {
       DioExceptionType.unknown => true,
       _ => false,
     };
+  }
+
+  /// 主动释放一个「不会再去消费」的响应流。
+  ///
+  /// 用于「读完响应头就决定放弃这次响应」的场景（如续传区间校验失败）：
+  /// 若不释放，底层连接会一直挂在半开状态直到被 GC。这里立刻订阅再立刻
+  /// 取消 —— 因为订阅是同步建立的、此时还没有数据被拉取，取消即可关闭连接，
+  /// 不会把整个响应体贴真正下载一遍。
+  static Future<void> _abortResponseStream(ResponseBody body) async {
+    try {
+      final subscription = body.stream.listen(null);
+      await subscription.cancel();
+    } catch (_) {
+      // 释放失败不影响主流程（异常路径已在处理中）。
+    }
   }
 
   /// 失败且不自动重试。
@@ -3114,9 +3195,21 @@ class DownloadService {
           case 'avi':
             return !startsWith([0x52, 0x49, 0x46, 0x46]); // "RIFF"
           case 'mp3':
-            // "ID3" 标签或 MPEG 帧同步（0xFF 0xEx）
+            // "ID3" 标签，或一个「字段全部合法」的 MPEG 音频帧头。
+            // 只比对 2 字节同步字（0xFF 0xEx）太弱：错位落盘的半截数据
+            // 开头是任意音频字节，偶合出同步字的概率约 1/2048。这里把
+            // 版本 / 层 / 码率 / 采样率四个字段的保留值一并排除，
+            // 在合法 MP3 流上不会误判，却能把偶合概率再压低两个数量级。
             if (startsWith([0x49, 0x44, 0x33])) return false;
-            return !(bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0);
+            if (bytes.length < 3) return true;
+            final validSync =
+                bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0;
+            if (!validSync) return true;
+            final version = (bytes[1] >> 3) & 0x03; // 01 = 保留
+            final layer = (bytes[1] >> 1) & 0x03; // 00 = 保留
+            final bitrate = (bytes[2] >> 4) & 0x0F; // 15 = 非法
+            final sampleRate = (bytes[2] >> 2) & 0x03; // 03 = 保留
+            return version == 1 || layer == 0 || bitrate == 15 || sampleRate == 3;
           case 'flac':
             return !startsWith([0x66, 0x4C, 0x61, 0x43]); // "fLaC"
           case 'ogg':
